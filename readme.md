@@ -3,4 +3,4 @@
 - It is totally free and it doesn't include any advertisements
 - You can download it at Releases page
 - "AURORA" is just project name
-- Close Beta Test - 2
+- Close Beta Test - 4
