@@ -14,6 +14,7 @@ import javafx.scene.input.MouseButton;
 import javafx.scene.layout.*;
 import javafx.scene.media.*;
 import javafx.scene.paint.Color;
+import javafx.scene.shape.Circle;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.effect.DropShadow;
 import javafx.scene.text.Font;
@@ -22,138 +23,121 @@ import javafx.stage.Stage;
 import javafx.stage.StageStyle;
 import javafx.stage.Modality;
 import javafx.util.Duration;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 import java.io.*;
-import java.nio.file.Paths;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
 import java.net.URI;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 import java.util.function.Consumer;
 
 public class aurora extends Application {
 
-    private final ObservableList<File> allSongs = FXCollections.observableArrayList();
+    // ── 상태 ──────────────────────────────────────────────────────────────
+    private enum View { SONGS, PLAYLISTS, PLAYLIST_DETAIL }
+    private enum RepeatMode { OFF, ALL, ONE }
+
+    private final ObservableList<File> allSongs        = FXCollections.observableArrayList();
     private final ObservableList<File> currentPlaylist = FXCollections.observableArrayList();
-    private final Map<String, ObservableList<File>> playlists = new HashMap<>();
-    private final Map<String, String> urlMappings = new HashMap<>();
+    private final Map<String, ObservableList<File>> playlists = new LinkedHashMap<>();
+    private final Map<String, String> urlMappings      = new HashMap<>();
+
+    private View   currentView         = View.SONGS;
     private String currentPlaylistName = null;
+    private int    currentIndex        = 0;
 
-    private int currentIndex = 0;
     private MediaPlayer mediaPlayer;
-    private boolean isShuffleOn = false;
-    private RepeatMode repeatMode = RepeatMode.OFF;
-    private final List<Integer> shuffleOrder = new ArrayList<>();
+    private boolean     isShuffleOn    = false;
+    private RepeatMode  repeatMode     = RepeatMode.OFF;
+    private final List<Integer> shuffleOrder  = new ArrayList<>();
     private int shuffleIndex = 0;
-    private final Set<Integer> playedIndices = new HashSet<>();
-    private final AtomicBoolean isUpdatingProgress = new AtomicBoolean(false);
+    private final Set<Integer>    playedIndices = new HashSet<>();
+    private final AtomicBoolean   isUpdatingProgress = new AtomicBoolean(false);
 
-    private final Label trackTitle = new Label("Not Playing");
-    private final Label trackArtist = new Label("Unknown Artist");
-    private final ImageView albumArt = new ImageView();
-    private final Slider progressSlider = new Slider();
-    private final Slider volumeSlider = new Slider(0, 1, 0.5);
-    private final Label currentTimeLabel = new Label("0:00");
-    private final Label totalTimeLabel = new Label("0:00");
+    private File dataFolder;
+    private static final String DATA_FILE = "aurora_player_data.dat";
+
+    // ── 색상 팔레트 (미니멀 화이트) ─────────────────────────────────────
+    private static final String C_BG          = "#FFFFFF";
+    private static final String C_SIDEBAR     = "#F7F7F8";
+    private static final String C_DIVIDER     = "#E8E8EA";
+    private static final String C_SURFACE     = "#FAFAFA";
+    private static final String C_TEXT_PRI    = "#111111";
+    private static final String C_TEXT_SEC    = "#888888";
+    private static final String C_ACCENT      = "#111111";
+    private static final String C_ACCENT_HOV  = "#333333";
+    private static final String C_ITEM_HOV    = "#F0F0F2";
+    private static final String C_ITEM_SEL    = "#EBEBED";
+    private static final String C_DANGER      = "#E53935";
+    private static final String C_PLAY_BG     = "#111111";
+    private static final String C_PLAY_ICON   = "#FFFFFF";
+
+    // ── UI 컴포넌트 ───────────────────────────────────────────────────────
+    private final Label    trackTitle      = new Label("Not Playing");
+    private final Label    trackArtist     = new Label("—");
+    private final ImageView albumArt       = new ImageView();
+    private final Slider   progressSlider  = new Slider();
+    private final Slider   volumeSlider    = new Slider(0, 1, 0.5);
+    private final Label    currentTimeLabel= new Label("0:00");
+    private final Label    totalTimeLabel  = new Label("0:00");
     private final ListView<String> contentView = new ListView<>();
+
     private Button playBtn;
     private Button shuffleBtn;
     private Button repeatBtn;
-    private VBox mainContent;
-    private StackPane albumPane;
     private Button tabSongs;
-    private Button tabPlaylist;
-    private HBox actionButtonBox;
+    private Button tabPlaylists;
+    private HBox   actionButtonBox;
+    private StackPane albumPane;
+    private VBox   mainContent;
 
-    private String currentView = "SONGS";
-    private double xOffset = 0;
-    private double yOffset = 0;
-    private BorderPane mainLayout;
-    private final Label titleLabel = new Label("AURORA");
-    private final Label contentTitle = new Label("Songs");
+    // 사이드바 하단 플레이리스트 상태
+    private final Label playlistStatusLabel = new Label("No Playlist");
+    private Stage       mainStage;
 
-    private static final String ACTIVE_TAB_STYLE = "-fx-background-color:#282828; -fx-text-fill:#1DB954; -fx-font-size:14px; -fx-font-weight:bold; -fx-alignment:center; -fx-padding:10 20 10 20;";
-    private static final String INACTIVE_TAB_STYLE = "-fx-background-color:transparent; -fx-text-fill:#b3b3b3; -fx-font-size:14px; -fx-font-weight:bold; -fx-alignment:center; -fx-padding:10 20 10 20;";
-    private static final String ACTIVE_CONTROL_STYLE = "-fx-background-color:#1DB954; -fx-text-fill:white; -fx-font-size:12px; -fx-font-weight:bold; -fx-cursor:hand; -fx-alignment:center; -fx-border-width:0; -fx-background-radius:8;";
-    private static final String INACTIVE_CONTROL_STYLE = "-fx-background-color:#282828; -fx-text-fill:#b3b3b3; -fx-font-size:12px; -fx-font-weight:bold; -fx-cursor:hand; -fx-alignment:center; -fx-border-width:0; -fx-background-radius:8;";
-    private static final String REPEAT_ONE_STYLE = "-fx-background-color:#00ff88; -fx-text-fill:black; -fx-font-size:12px; -fx-font-weight:bold; -fx-cursor:hand; -fx-alignment:center; -fx-border-width:0; -fx-background-radius:8;";
-    private static final String DATA_FILE = "aurora_player_data.dat";
-    private File dataFolder;
-
-    enum RepeatMode {
-        OFF, ALL, ONE
-    }
-
-    public static void main(String[] args) {
-        launch(args);
-    }
+    // ══════════════════════════════════════════════════════════════════════
+    public static void main(String[] args) { launch(args); }
 
     @Override
     public void start(Stage stage) {
         initializeDataFolder();
         loadDataFromFile();
+        mainStage = stage;
         initializeUI(stage);
         updateContentView();
         updateActionButtons();
     }
 
+    // ── 데이터 폴더 ──────────────────────────────────────────────────────
     private void initializeDataFolder() {
         try {
-            java.net.URI uri = aurora.class.getProtectionDomain().getCodeSource().getLocation().toURI();
+            URI uri = aurora.class.getProtectionDomain().getCodeSource().getLocation().toURI();
             File codeLoc = new File(uri);
             File baseDir = codeLoc.isDirectory() ? codeLoc : codeLoc.getParentFile();
-            if (baseDir == null) {
-                baseDir = new File(System.getProperty("user.dir"));
-            }
-
+            if (baseDir == null) baseDir = new File(System.getProperty("user.dir"));
             dataFolder = new File(baseDir, "Data");
-            if (!dataFolder.exists()) {
-                dataFolder.mkdirs();
-            }
         } catch (Exception e) {
             dataFolder = new File(System.getProperty("user.dir"), "Data");
-            if (!dataFolder.exists()) {
-                dataFolder.mkdirs();
-            }
         }
+        if (!dataFolder.exists()) dataFolder.mkdirs();
     }
 
+    // ── UI 초기화 ──────────────────────────────────────────────────────
     private void initializeUI(Stage stage) {
-        VBox titleBar = createTitleBar(stage);
-        VBox leftSidebar = createLeftSidebar(stage);
-        VBox rightSidebar = createRightSidebar();
-        VBox bottomBar = createBottomBar();
-        mainContent = createMainContent();
+        BorderPane root = new BorderPane();
+        root.setStyle("-fx-background-color:" + C_BG + ";");
 
-        mainLayout = new BorderPane();
-        mainLayout.setTop(titleBar);
-        mainLayout.setLeft(leftSidebar);
-        mainLayout.setCenter(mainContent);
-        mainLayout.setRight(rightSidebar);
-        mainLayout.setBottom(bottomBar);
-        mainLayout.setStyle("-fx-background-color:#121212;");
+        root.setLeft(buildSidebar(stage));
+        root.setCenter(buildCenter());
+        root.setBottom(buildPlayerBar());
 
-        Scene scene = new Scene(mainLayout, 1100, 680);
+        Scene scene = new Scene(root, 1080, 660);
         loadCustomFont();
-        scene.getRoot().setStyle("-fx-font-family: 'Noto Sans', 'Segoe UI', Arial; -fx-font-smoothing-type: gray;");
+        scene.getRoot().setStyle("-fx-font-family:'Noto Sans','Segoe UI',Arial; -fx-font-smoothing-type:gray;");
         System.setProperty("prism.lcdtext", "false");
+        scene.setOnKeyPressed(e -> { if (e.getCode() == KeyCode.SPACE) { togglePlay(); e.consume(); } });
 
-        scene.setOnKeyPressed(e -> {
-            if (e.getCode() == KeyCode.SPACE) {
-                togglePlay();
-                e.consume();
-            }
-        });
-
-        stage.initStyle(StageStyle.UNDECORATED);
         stage.setScene(scene);
         stage.setTitle("AURORA");
         setApplicationIcon(stage);
@@ -161,727 +145,350 @@ public class aurora extends Application {
         stage.show();
     }
 
-    private VBox createTitleBar(Stage stage) {
-        HBox titleBar = new HBox();
-        titleBar.setStyle("-fx-background-color:#000000; -fx-padding:10 15 10 15;");
-        titleBar.setAlignment(Pos.CENTER_LEFT);
+    // ── 사이드바 ──────────────────────────────────────────────────────────
+    private VBox buildSidebar(Stage stage) {
+        tabSongs     = navTab("◈SONG",     () -> { currentView = View.SONGS;     updateContentView(); updateActionButtons(); updateTabStyles(); });
+        tabPlaylists = navTab("◈PLAYLIST", () -> { currentView = View.PLAYLISTS; updateContentView(); updateActionButtons(); updateTabStyles(); });
+        updateTabStyles();
 
-        loadTitleIcon();
-        titleLabel.setContentDisplay(ContentDisplay.LEFT);
-        titleLabel.setStyle("-fx-text-fill: #1DB954; -fx-font-size:18px; -fx-font-weight:bold; -fx-padding:0 12 0 0;");
-        titleLabel.setEffect(new DropShadow(6, Color.rgb(0, 0, 0, 0.6)));
+        VBox nav = new VBox(2, tabSongs, tabPlaylists);
+        nav.setPadding(new Insets(16, 8, 8, 8));
 
-        Region titleSpacer = new Region();
-        HBox.setHgrow(titleSpacer, Priority.ALWAYS);
+        // 하단: 플레이리스트 상태 표시
+        Label statusHeader = new Label("PLAYLIST STATUS");
+        statusHeader.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:10px; -fx-font-weight:bold;");
 
-        Button minimizeBtn = createTitleBarButton("ー", e -> stage.setIconified(true));
-        Button maximizeBtn = createTitleBarButton("🗖", e -> stage.setMaximized(!stage.isMaximized()));
-        Button closeBtn = createTitleBarButton("✕", e -> {
-            saveDataToFile();
-            Platform.exit();
-        });
+        playlistStatusLabel.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:12px; -fx-font-weight:bold;");
+        playlistStatusLabel.setWrapText(true);
+        playlistStatusLabel.setMaxWidth(160);
 
-        titleBar.getChildren().addAll(titleLabel, titleSpacer, minimizeBtn, maximizeBtn, closeBtn);
-        makeDraggable(titleBar, stage);
-        return new VBox(titleBar);
+        VBox statusBox = new VBox(4, statusHeader, playlistStatusLabel);
+        statusBox.setPadding(new Insets(12, 12, 20, 14));
+        statusBox.setStyle("-fx-border-color:" + C_DIVIDER + "; -fx-border-width:1 0 0 0;");
+
+        Region sp = new Region();
+        VBox.setVgrow(sp, Priority.ALWAYS);
+
+        VBox sidebar = new VBox(nav, sp, statusBox);
+        sidebar.setPrefWidth(200);
+        sidebar.setStyle("-fx-background-color:" + C_SIDEBAR + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:0 1 0 0;");
+        return sidebar;
     }
 
-    private Button createTitleBarButton(String text, javafx.event.EventHandler<javafx.event.ActionEvent> handler) {
-        Button btn = new Button(text);
-        btn.setStyle("-fx-background-color:transparent; -fx-text-fill:#b3b3b3; -fx-font-size:16px; -fx-cursor:hand; -fx-padding:5 10 5 10;");
-        btn.setOnAction(handler);
-        applyHoverEffect(btn);
-        return btn;
+    private Button navTab(String text, Runnable action) {
+        Button b = new Button(text);
+        b.setMaxWidth(Double.MAX_VALUE);
+        b.setAlignment(Pos.CENTER_LEFT);
+        b.setPadding(new Insets(9, 14, 9, 14));
+        b.setStyle(navTabStyle(false));
+        b.setOnAction(e -> action.run());
+        b.setOnMouseEntered(e -> { if (!isTabActive(b)) b.setStyle(navTabStyle(false) + "-fx-background-color:" + C_ITEM_HOV + ";"); });
+        b.setOnMouseExited (e -> { if (!isTabActive(b)) b.setStyle(navTabStyle(false)); });
+        return b;
     }
 
-    private void makeDraggable(HBox titleBar, Stage stage) {
-        titleBar.setOnMousePressed(e -> {
-            xOffset = e.getSceneX();
-            yOffset = e.getSceneY();
-        });
-        titleBar.setOnMouseDragged(e -> {
-            stage.setX(e.getScreenX() - xOffset);
-            stage.setY(e.getScreenY() - yOffset);
-        });
+    private boolean isTabActive(Button b) {
+        return Boolean.TRUE.equals(b.getProperties().get("active"));
     }
 
-    private VBox createLeftSidebar(Stage stage) {
-        tabSongs = createTabButton("SONG", this::switchToSongsView);
-        tabPlaylist = createTabButton("PLAYLIST", this::switchToPlaylistsView);
-        tabSongs.setStyle(ACTIVE_TAB_STYLE);
-
-        VBox menuBox = new VBox(5, tabSongs, tabPlaylist);
-        menuBox.setPadding(new Insets(10));
-        menuBox.setAlignment(Pos.CENTER);
-
-        Button addFileBtn = createUploadButton("FILE", e -> handleAddFile(stage));
-        Button addUrlBtn = createUploadButton("URL", e -> addFromUrl());
-
-        VBox uploadBox = new VBox(8, addFileBtn, addUrlBtn);
-        uploadBox.setPadding(new Insets(20));
-
-        Region leftSpacer = new Region();
-        VBox.setVgrow(leftSpacer, Priority.ALWAYS);
-
-        VBox leftSidebar = new VBox(menuBox, leftSpacer, uploadBox);
-        leftSidebar.setStyle("-fx-background-color:#000000;");
-        leftSidebar.setPrefWidth(220);
-
-        titleLabel.translateXProperty().bind(
-                leftSidebar.widthProperty().divide(2).subtract(titleLabel.widthProperty().divide(1.5))
-        );
-        return leftSidebar;
+    private String navTabStyle(boolean active) {
+        return "-fx-background-color:" + (active ? C_ITEM_SEL : "transparent") + "; "
+             + "-fx-text-fill:" + (active ? C_TEXT_PRI : C_TEXT_SEC) + "; "
+             + "-fx-font-size:13px; -fx-font-weight:" + (active ? "bold" : "normal") + "; "
+             + "-fx-background-radius:8; -fx-cursor:hand; -fx-border-width:0;";
     }
 
-    private Button createTabButton(String text, Runnable action) {
-        Button btn = new Button(text);
-        btn.setStyle(INACTIVE_TAB_STYLE);
-        btn.setMaxWidth(Double.MAX_VALUE);
-        btn.setOnAction(e -> {
-            action.run();
-            updateTabStyles();
-        });
-        applyHoverEffect(btn);
-        return btn;
+    private void updateTabStyles() {
+        boolean songsActive = (currentView == View.SONGS);
+        boolean plActive    = (currentView == View.PLAYLISTS || currentView == View.PLAYLIST_DETAIL);
+
+        tabSongs.setStyle(navTabStyle(songsActive));
+        tabSongs.getProperties().put("active", songsActive);
+        tabPlaylists.setStyle(navTabStyle(plActive));
+        tabPlaylists.getProperties().put("active", plActive);
     }
 
-    private Button createUploadButton(String text, javafx.event.EventHandler<javafx.event.ActionEvent> handler) {
-        Button btn = new Button(text);
-        btn.setStyle("-fx-background-color:transparent; -fx-text-fill:#1DB954; -fx-font-weight:bold; -fx-font-size:12px; -fx-padding:8 15 8 15; -fx-border-color:#1DB954; -fx-border-width:1; -fx-border-radius:20; -fx-background-radius:20;");
-        btn.setMaxWidth(Double.MAX_VALUE);
-        btn.setOnAction(handler);
-        applyHoverEffect(btn);
-        return btn;
+    private Button sidebarActionBtn(String text, javafx.event.EventHandler<javafx.event.ActionEvent> h) {
+        Button b = new Button(text);
+        b.setMaxWidth(Double.MAX_VALUE);
+        String base = "-fx-background-color:transparent; -fx-text-fill:" + C_TEXT_SEC
+                    + "; -fx-font-size:12px; -fx-cursor:hand; -fx-padding:7 10 7 10;"
+                    + "-fx-background-radius:8; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-border-radius:8;";
+        b.setStyle(base);
+        b.setOnAction(h);
+        b.setOnMouseEntered(e -> b.setStyle(base + "-fx-background-color:" + C_ITEM_HOV + ";"));
+        b.setOnMouseExited (e -> b.setStyle(base));
+        return b;
     }
 
-    private void handleAddFile(Stage stage) {
-        FileChooser fc = new FileChooser();
-        fc.setTitle("Select Music Files");
-        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Audio Files", "*.mp3", "*.wav", "*.m4a"));
-        List<File> files = fc.showOpenMultipleDialog(stage);
-
-        if (files == null || files.isEmpty()) {
-            return;
-        }
-
-        if ("PLAYLIST_DETAIL".equals(currentView) && currentPlaylistName != null) {
-            addFilesToPlaylist(files, currentPlaylistName);
-        } else {
-            addFilesToLibrary(files);
-        }
-    }
-
-    private void addFilesToPlaylist(List<File> files, String playlistName) {
-        ObservableList<File> playlist = playlists.get(playlistName);
-        if (playlist == null) {
-            return;
-        }
-
-        int added = 0;
-        for (File f : files) {
-            if (!playlist.contains(f)) {
-                playlist.add(f);
-                added++;
-            }
-        }
-
-        if (added > 0) {
-            saveDataToFile();
-            openPlaylist(playlistName);
-            showAlert("Success", added + " song(s) added to playlist!");
-        }
-    }
-
-    private void addFilesToLibrary(List<File> files) {
-        int added = 0;
-        for (File f : files) {
-            if (!allSongs.contains(f)) {
-                allSongs.add(f);
-                added++;
-            }
-        }
-
-        if (added > 0) {
-            saveDataToFile();
-            updateContentView();
-
-            if (allSongs.size() == files.size() && currentPlaylist.isEmpty()) {
-                currentPlaylist.setAll(allSongs);
-                currentIndex = 0;
-                playTrack();
-            }
-            showAlert("Success", added + " file(s) added.");
-        }
-    }
-
-    private VBox createRightSidebar() {
-        trackTitle.setStyle("-fx-text-fill:white; -fx-font-size:16px; -fx-font-weight:bold;");
-        trackTitle.setWrapText(true);
-        trackTitle.setMaxWidth(180);
-        trackTitle.setAlignment(Pos.CENTER);
-
-        trackArtist.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:13px;");
-        trackArtist.setWrapText(true);
-        trackArtist.setMaxWidth(180);
-        trackArtist.setAlignment(Pos.CENTER);
-
-        VBox trackBox = new VBox(5, trackTitle, trackArtist);
-        trackBox.setAlignment(Pos.TOP_CENTER);
-        trackBox.setPadding(new Insets(10, 0, 20, 0));
-
-        albumPane = new StackPane();
-        albumPane.setPrefSize(180, 180);
-        updateAlbumArt(null);
-
-        Label volumeLabel = new Label("Volume");
-        volumeLabel.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:12px; -fx-font-weight:bold;");
-
-        volumeSlider.setStyle("-fx-background-color: transparent; -fx-control-inner-background: #1a1a1a; -fx-accent: #00ff88; -fx-background-radius: 10; -fx-padding: 5;");
-        volumeSlider.setMaxWidth(150);
-        volumeSlider.valueProperty().addListener((obs, old, newVal) -> {
-            if (mediaPlayer != null) {
-                mediaPlayer.setVolume(newVal.doubleValue());
-            }
-        });
-
-        VBox volumeBox = new VBox(8, volumeLabel, volumeSlider);
-        volumeBox.setAlignment(Pos.CENTER);
-        volumeBox.setPadding(new Insets(20, 0, 0, 0));
-
-        Region rightSpacer = new Region();
-        VBox.setVgrow(rightSpacer, Priority.ALWAYS);
-
-        VBox rightSidebar = new VBox(trackBox, albumPane, volumeBox, rightSpacer);
-        rightSidebar.setPadding(new Insets(20));
-        rightSidebar.setStyle("-fx-background-color:#121212;");
-        rightSidebar.setAlignment(Pos.TOP_CENTER);
-        rightSidebar.setPrefWidth(220);
-        return rightSidebar;
-    }
-
-    private VBox createMainContent() {
-        contentTitle.setStyle("-fx-text-fill:white; -fx-font-size:20px; -fx-font-weight:bold;");
-
-        actionButtonBox = new HBox(10);
+    // ── 중앙 콘텐츠 ──────────────────────────────────────────────────────
+    private BorderPane buildCenter() {
+        // 헤더
+        actionButtonBox = new HBox(8);
         actionButtonBox.setAlignment(Pos.CENTER_LEFT);
-        actionButtonBox.setPadding(new Insets(5, 0, 5, 0));
 
-        HBox headerBox = new HBox(20, actionButtonBox);
-        headerBox.setAlignment(Pos.CENTER_LEFT);
+        HBox header = new HBox(actionButtonBox);
+        header.setAlignment(Pos.CENTER_LEFT);
+        header.setPadding(new Insets(16, 20, 12, 20));
+        header.setStyle("-fx-border-color:" + C_DIVIDER + "; -fx-border-width:0 0 1 0;");
         HBox.setHgrow(actionButtonBox, Priority.ALWAYS);
 
+        // 리스트
         setupContentView();
 
-        VBox content = new VBox(15, headerBox, contentView);
-        content.setStyle("-fx-background-color:#181818;");
-        content.setPadding(new Insets(20));
-        VBox.setVgrow(contentView, Priority.ALWAYS);
-        return content;
+        BorderPane center = new BorderPane();
+        center.setTop(header);
+        center.setCenter(contentView);
+        center.setStyle("-fx-background-color:" + C_BG + ";");
+        return center;
     }
 
     private void setupContentView() {
-        contentView.setStyle("-fx-background-color:#181818; -fx-control-inner-background:#181818; -fx-text-fill:white; -fx-font-size:13px; -fx-border-color:transparent;");
-        contentView.setPlaceholder(new Label("No songs added.\nClick 'FILE' or 'URL' to get started."));
+        contentView.setStyle(
+            "-fx-background-color:" + C_BG + "; -fx-control-inner-background:" + C_BG + "; "
+          + "-fx-border-color:transparent; -fx-focus-color:transparent; -fx-faint-focus-color:transparent;");
 
-        contentView.setCellFactory(lv -> new ListCell<String>() {
-            private final HBox hbox = new HBox(8);
-            private final Label lbl = new Label();
-            private final Button editBtn = new Button("EDIT");
-            private final Button delBtn = new Button("DELETE");
+        Label empty = new Label("No items here yet.");
+        empty.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:13px;");
+        contentView.setPlaceholder(empty);
+
+        contentView.setCellFactory(lv -> new ListCell<>() {
+            private final HBox  row     = new HBox(10);
+            private final Label idx     = new Label();
+            private final Label name    = new Label();
+            private final Button editBtn= smallBtn("Edit",   "#555555");
+            private final Button delBtn = smallBtn("Delete", C_DANGER);
 
             {
-                lbl.setStyle("-fx-text-fill:white; -fx-font-size:13px;");
-                lbl.setMaxWidth(Double.MAX_VALUE);
-                HBox.setHgrow(lbl, Priority.ALWAYS);
+                idx.setMinWidth(28);
+                idx.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:12px;");
+                name.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:13px;");
+                name.setMaxWidth(Double.MAX_VALUE);
+                HBox.setHgrow(name, Priority.ALWAYS);
 
-                editBtn.setStyle("-fx-background-color:#282828; -fx-text-fill:#ffc857; -fx-font-size:11px; -fx-font-weight:bold; -fx-padding:6 12 6 12; -fx-background-radius:15; -fx-cursor:hand;");
-                applyHoverEffect(editBtn);
                 editBtn.setOnAction(e -> handleEditButtonClick(getIndex(), getItem()));
+                delBtn .setOnAction(e -> handleDeleteButtonClick(getIndex(), getItem()));
+                editBtn.setVisible(false);
+                delBtn .setVisible(false);
 
-                delBtn.setStyle("-fx-background-color:#282828; -fx-text-fill:#e03b3b; -fx-font-size:11px; -fx-font-weight:bold; -fx-padding:6 12 6 12; -fx-background-radius:15; -fx-cursor:hand;");
-                applyHoverEffect(delBtn);
-                delBtn.setOnAction(e -> handleDeleteButtonClick(getIndex(), getItem()));
+                row.setAlignment(Pos.CENTER_LEFT);
+                row.setPadding(new Insets(6, 12, 6, 12));
+                row.getChildren().addAll(idx, name, editBtn, delBtn);
+                row.setStyle("-fx-background-color:transparent; -fx-background-radius:8;");
 
-                hbox.getChildren().addAll(lbl, editBtn, delBtn);
-                hbox.setAlignment(Pos.CENTER_LEFT);
+                setOnMouseEntered(e -> {
+                    if (!isEmpty()) {
+                        row.setStyle("-fx-background-color:" + C_ITEM_HOV + "; -fx-background-radius:8;");
+                        editBtn.setVisible(true);
+                        delBtn .setVisible(true);
+                    }
+                });
+                setOnMouseExited(e -> {
+                    row.setStyle("-fx-background-color:transparent; -fx-background-radius:8;");
+                    editBtn.setVisible(false);
+                    delBtn .setVisible(false);
+                });
             }
 
             @Override
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty || item == null) {
-                    setText(null);
-                    setGraphic(null);
-                } else {
-                    lbl.setText(item);
-                    setGraphic(hbox);
-                }
+                setStyle("-fx-background-color:transparent; -fx-padding:0 4 0 4;");
+                if (empty || item == null) { setText(null); setGraphic(null); return; }
+                idx.setText(String.valueOf(getIndex() + 1));
+                name.setText(item);
+                setGraphic(row);
+                setText(null);
             }
         });
 
         contentView.setOnMouseClicked(e -> {
-            if (e.getClickCount() == 2 && e.getButton() == MouseButton.PRIMARY) {
-                handleDoubleClick();
-            }
+            if (e.getClickCount() == 2 && e.getButton() == MouseButton.PRIMARY) handleDoubleClick();
         });
     }
 
-    private void handleEditButtonClick(int idx, String item) {
-        if (idx < 0 || item == null) {
-            return;
-        }
-
-        switch (currentView) {
-            case "SONGS":
-                handleSongEdit(idx);
-                break;
-            case "PLAYLIST_DETAIL":
-                handlePlaylistItemEdit(idx);
-                break;
-            default:
-                showAlert("Not Editable", "Only songs can be edited.");
-                break;
-        }
+    private Button smallBtn(String text, String color) {
+        Button b = new Button(text);
+        String base = "-fx-background-color:transparent; -fx-text-fill:" + color
+                    + "; -fx-font-size:11px; -fx-cursor:hand; -fx-padding:3 8 3 8;"
+                    + "-fx-background-radius:5; -fx-border-color:" + color + "; -fx-border-width:1; -fx-border-radius:5;";
+        b.setStyle(base);
+        b.setOnMouseEntered(e -> b.setStyle(base + "-fx-background-color:" + color + "22;"));
+        b.setOnMouseExited (e -> b.setStyle(base));
+        return b;
     }
 
-    private void handleSongEdit(int idx) {
-        if (idx < 0 || idx >= allSongs.size()) {
-            return;
-        }
-        File f = allSongs.get(idx);
-        if (!f.getName().startsWith("URL: ")) {
-            showAlert("Edit Not Allowed", "Can't edit local file names");
-            return;
-        }
-        Optional<String> result = showCustomTextInputDialog("Edit Song Title", "Enter new song name:");
-        result.ifPresent(newName -> {
-            if (newName.trim().isEmpty()) {
-                showAlert("Error", "The name is empty");
-                return;
-            }
-            boolean ok = renameUrlSong(f, newName.trim(), allSongs, idx);
-            if (ok) {
-                saveDataToFile();
-                updateContentView();
-            }
-        });
-    }
+    // ── 플레이어바 ───────────────────────────────────────────────
+    private VBox buildPlayerBar() {
+        // 앨범 아트
+        albumPane = new StackPane();
+        albumPane.setPrefSize(44, 44);
+        updateAlbumArt(null);
 
-    private void handlePlaylistItemEdit(int idx) {
-        ObservableList<File> playlist = playlists.get(currentPlaylistName);
-        if (playlist == null || idx < 0 || idx >= playlist.size()) {
-            return;
-        }
-        File f = playlist.get(idx);
-        if (!f.getName().startsWith("URL: ")) {
-            showAlert("Edit Not Allowed", "Can't edit local file names");
-            return;
-        }
-        Optional<String> result = showCustomTextInputDialog("Edit Song Title", "Enter new song name:");
-        result.ifPresent(newName -> {
-            if (newName.trim().isEmpty()) {
-                showAlert("Error", "The name is empty");
-                return;
-            }
-            boolean ok = renameUrlSong(f, newName.trim(), playlist, idx);
-            if (ok) {
-                saveDataToFile();
-                openPlaylist(currentPlaylistName);
-                updateContentView();
-            }
-        });
-    }
+        // 트랙 정보
+        trackTitle.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:13px; -fx-font-weight:bold;");
+        trackArtist.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:11px;");
+        VBox trackInfo = new VBox(2, trackTitle, trackArtist);
+        trackInfo.setAlignment(Pos.CENTER_LEFT);
+        trackInfo.setPrefWidth(180);
 
-    private boolean renameUrlSong(File urlEntry, String newBaseName, ObservableList<File> list, int indexInList) {
-        try {
-            String oldKey = urlEntry.getName();
-            String mapped = urlMappings.get(oldKey);
-            if (mapped == null) {
-                showAlert("Error", "No mapping found for:\n" + oldKey);
-                return false;
-            }
+        HBox leftZone = new HBox(12, albumPane, trackInfo);
+        leftZone.setAlignment(Pos.CENTER_LEFT);
+        leftZone.setPrefWidth(230);
 
-            // mapped는 보통 file: URI 형태
-            File srcFile;
-            try {
-                if (mapped.startsWith("file:")) {
-                    srcFile = new File(new URI(mapped));
-                } else {
-                    srcFile = new File(mapped);
-                }
-            } catch (Exception ex) {
-                srcFile = new File(mapped);
-            }
-
-            if (!srcFile.exists()) {
-                showAlert("Error", "There's no original mp3:\n" + srcFile.getAbsolutePath());
-                return false;
-            }
-
-            // 현재 재생 중인 곡인지 미리 확인 (파일 이동 전)
-            boolean isCurrentlyPlayingThisSong = false;
-            for (int i = 0; i < currentPlaylist.size(); i++) {
-                File it = currentPlaylist.get(i);
-                if (it.getName().equals(urlEntry.getName()) && i == currentIndex) {
-                    isCurrentlyPlayingThisSong = true;
-                    break;
-                }
-            }
-
-            // 재생 중이면 MediaPlayer 정지 (파일 이동 전!)
-            if (isCurrentlyPlayingThisSong && mediaPlayer != null) {
-                disposeMediaPlayer();
-                // 작은 지연 추가 (Windows 파일 락 해제)
-                try {
-                    Thread.sleep(200);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-
-            // sanitize: 파일명에 슬래시 등 금지 문자 제거
-            String sanitized = newBaseName.replaceAll("[/\\\\:*?\"<>|]", "_").trim();
-            if (sanitized.isEmpty()) {
-                showAlert("Error", "Enter a valid file name");
-                return false;
-            }
-
-            // 확장자 유지 또는 .mp3 추가
-            String newFilename = sanitized;
-            if (!newFilename.toLowerCase().endsWith(".mp3") && !newFilename.toLowerCase().endsWith(".wav")) {
-                newFilename += ".mp3";
-            }
-
-            File targetFile = new File(dataFolder, newFilename);
-            if (targetFile.exists()) {
-                showAlert("Error", "The same file already exists: " + targetFile.getName());
-                return false;
-            }
-
-            // 실제 파일 이동/이름 변경
-            Files.move(srcFile.toPath(), targetFile.toPath(), StandardCopyOption.ATOMIC_MOVE);
-
-            // 새 URL File 객체와 매핑 업데이트
-            File newUrlFile = new File("URL: " + targetFile.getName());
-            String newKey = newUrlFile.getName();
-            String newMappedValue = targetFile.toURI().toString();
-
-            urlMappings.remove(oldKey);
-            urlMappings.put(newKey, newMappedValue);
-
-            // 목록(라이브러리/모든 플레이리스트)에서 old urlEntry를 newUrlFile로 교체
-            // 1) 대상 리스트에서 교체
-            if (list != null && indexInList >= 0 && indexInList < list.size()) {
-                list.set(indexInList, newUrlFile);
-            } else {
-                // 안전하게 allSongs에서 바꿔본다
-                int idx = allSongs.indexOf(urlEntry);
-                if (idx >= 0) {
-                    allSongs.set(idx, newUrlFile);
-                }
-            }
-
-            // 2) 모든 playlists 안에 존재하면 교체
-            for (Map.Entry<String, ObservableList<File>> en : playlists.entrySet()) {
-                ObservableList<File> pl = en.getValue();
-                for (int i = 0; i < pl.size(); i++) {
-                    File it = pl.get(i);
-                    if (it.getName().equals(urlEntry.getName())) {
-                        pl.set(i, newUrlFile);
-                    }
-                }
-            }
-
-            // 현재 재생 중인 곡인지 확인
-            boolean wasPlayingThisSong = false;
-            final Duration[] currentTime = new Duration[1];
-
-            for (int i = 0; i < currentPlaylist.size(); i++) {
-                File it = currentPlaylist.get(i);
-                if (it.getName().equals(urlEntry.getName())) {
-                    currentPlaylist.set(i, newUrlFile);
-                    if (i == currentIndex && mediaPlayer == null) {
-                        // 이미 disposeMediaPlayer()로 정지했으므로
-                        wasPlayingThisSong = true;
-                    }
-                }
-            }
-
-            // 현재 재생 중인 곡인지 확인
-            boolean isCurrentlyPlaying = false;
-            boolean wasPlaying = false;
-
-            for (int i = 0; i < currentPlaylist.size(); i++) {
-                File it = currentPlaylist.get(i);
-                if (it.getName().equals(urlEntry.getName())) {
-                    currentPlaylist.set(i, newUrlFile);
-                    if (i == currentIndex) {
-                        isCurrentlyPlaying = true;
-                        if (mediaPlayer != null) {
-                            wasPlaying = mediaPlayer.getStatus() == MediaPlayer.Status.PLAYING;
-                        }
-                    }
-                }
-            }
-
-            // 현재 재생 중이었다면 정지 후 파일명 변경, 그리고 다시 재생
-            if (isCurrentlyPlaying && mediaPlayer != null) {
-                try {
-                    // 1) 현재 재생 정지
-                    disposeMediaPlayer();
-
-                    // 2) 파일명 변경 완료 (이미 완료됨)
-                    // 3) 새 파일로 다시 재생
-                    playTrack();
-
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                    showAlert("Error", "Failed to update the song:\n" + ex.getMessage());
-                }
-            } else {
-                // 재생 중이 아니면 트랙 정보만 업데이트
-                updateTrackInfo(stripExtension(newUrlFile.getName()));
-            }
-
-            showAlert("Success", "Changed song's name: " + targetFile.getName());
-            return true;
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            showAlert("Error", "Failed to change the song's name:\n" + ex.getMessage());
-            return false;
-        }
-    }
-
-    private void handleDeleteButtonClick(int idx, String item) {
-        if (idx < 0 || item == null) {
-            return;
-        }
-
-        switch (currentView) {
-            case "SONGS":
-                handleSongDelete(idx, item);
-                break;
-            case "PLAYLISTS":
-                handlePlaylistDelete(item);
-                break;
-            case "PLAYLIST_DETAIL":
-                handlePlaylistItemDelete(idx);
-                break;
-        }
-    }
-
-    private void handleSongDelete(int idx, String item) {
-        if (showCustomConfirmDialog("Delete Song", "Delete " + item + "?", "This action cannot be undone.")) {
-            if (idx >= 0 && idx < allSongs.size()) {
-                File removed = allSongs.remove(idx);
-                currentPlaylist.remove(removed);
-                saveDataToFile();
-                updateContentView();
-            }
-        }
-    }
-
-    private void handlePlaylistDelete(String item) {
-        int pidx = item.lastIndexOf(" (");
-        String playlistName = pidx > 0 ? item.substring(0, pidx) : item;
-
-        if (showCustomConfirmDialog("Delete Playlist", "Delete playlist '" + playlistName + "'?", "This action cannot be undone.")) {
-            playlists.remove(playlistName);
-            saveDataToFile();
-            updateContentView();
-        }
-    }
-
-    private void handlePlaylistItemDelete(int idx) {
-        ObservableList<File> playlist = playlists.get(currentPlaylistName);
-        if (playlist != null && idx >= 0 && idx < playlist.size()) {
-            String itemName = stripExtension(playlist.get(idx).getName());
-            if (showCustomConfirmDialog("Delete Song", "Delete " + itemName + " from playlist?", "This action cannot be undone.")) {
-                playlist.remove(idx);
-                saveDataToFile();
-                openPlaylist(currentPlaylistName);
-            }
-        }
-    }
-
-    private VBox createBottomBar() {
-        shuffleBtn = createControlButton("Shuffle", INACTIVE_CONTROL_STYLE);
-        Button prevBtn = createControlButton("Prev", INACTIVE_CONTROL_STYLE);
-        playBtn = createPlayButton();
-        Button nextBtn = createControlButton("Next", INACTIVE_CONTROL_STYLE);
-        repeatBtn = createControlButton("Repeat", INACTIVE_CONTROL_STYLE);
+        // 컨트롤 버튼
+        shuffleBtn = controlBtn("⇄");
+        Button prevBtn = controlBtn("◁");
+        playBtn = playButton();
+        Button nextBtn = controlBtn("▷");
+        repeatBtn = controlBtn("↻");
 
         shuffleBtn.setOnAction(e -> toggleShuffle());
-        prevBtn.setOnAction(e -> playPrev());
-        playBtn.setOnAction(e -> togglePlay());
-        nextBtn.setOnAction(e -> playNext());
-        repeatBtn.setOnAction(e -> toggleRepeat());
+        prevBtn   .setOnAction(e -> playPrev());
+        playBtn   .setOnAction(e -> togglePlay());
+        nextBtn   .setOnAction(e -> playNext());
+        repeatBtn .setOnAction(e -> toggleRepeat());
 
-        HBox controlBox = new HBox(20, shuffleBtn, prevBtn, playBtn, nextBtn, repeatBtn);
-        controlBox.setAlignment(Pos.CENTER);
-        controlBox.setPadding(new Insets(10, 0, 5, 0));
+        HBox controls = new HBox(8, shuffleBtn, prevBtn, playBtn, nextBtn, repeatBtn);
+        controls.setAlignment(Pos.CENTER);
 
-        currentTimeLabel.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:11px;");
-        totalTimeLabel.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:11px;");
+        // 프로그레스
+        currentTimeLabel.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:11px;");
+        totalTimeLabel  .setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:11px;");
 
-        progressSlider.setStyle("-fx-background-color: transparent; -fx-control-inner-background: #1a1a1a; -fx-accent: #00ff88; -fx-background-radius: 10; -fx-padding: 5;");
-        HBox.setHgrow(progressSlider, Priority.ALWAYS);
-
+        progressSlider.setStyle(
+            "-fx-background-color:transparent; -fx-control-inner-background:" + C_DIVIDER + "; "
+          + "-fx-accent:" + C_ACCENT + "; -fx-padding:2;");
         progressSlider.setOnMousePressed(e -> seekToPosition());
         progressSlider.setOnMouseDragged(e -> seekToPosition());
+        HBox.setHgrow(progressSlider, Priority.ALWAYS);
 
-        HBox progressBox = new HBox(10, currentTimeLabel, progressSlider, totalTimeLabel);
-        progressBox.setAlignment(Pos.CENTER);
-        progressBox.setPadding(new Insets(0, 20, 0, 20));
+        HBox progressRow = new HBox(8, currentTimeLabel, progressSlider, totalTimeLabel);
+        progressRow.setAlignment(Pos.CENTER);
 
-        VBox bottomBar = new VBox(controlBox, progressBox);
-        bottomBar.setStyle("-fx-background-color:#181818; -fx-border-color:#282828; -fx-border-width:1 0 0 0;");
-        bottomBar.setPadding(new Insets(15));
-        bottomBar.setAlignment(Pos.CENTER);
-        return bottomBar;
+        VBox centerZone = new VBox(6, controls, progressRow);
+        centerZone.setAlignment(Pos.CENTER);
+        HBox.setHgrow(centerZone, Priority.ALWAYS);
+
+        // 볼륨
+        Label volIcon = new Label("🔊");
+        volIcon.setStyle("-fx-font-size:13px;");
+        volumeSlider.setMaxWidth(100);
+        volumeSlider.setStyle(
+            "-fx-background-color:transparent; -fx-control-inner-background:" + C_DIVIDER + "; "
+          + "-fx-accent:" + C_ACCENT + "; -fx-padding:2;");
+        volumeSlider.valueProperty().addListener((obs, o, n) -> { if (mediaPlayer != null) mediaPlayer.setVolume(n.doubleValue()); });
+
+        HBox rightZone = new HBox(8, volIcon, volumeSlider);
+        rightZone.setAlignment(Pos.CENTER_RIGHT);
+        rightZone.setPrefWidth(160);
+
+        HBox playerRow = new HBox(leftZone, centerZone, rightZone);
+        playerRow.setAlignment(Pos.CENTER);
+        playerRow.setPadding(new Insets(12, 20, 14, 20));
+
+        VBox bar = new VBox(playerRow);
+        bar.setStyle("-fx-background-color:" + C_BG + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1 0 0 0;");
+        return bar;
     }
 
-    private Button createControlButton(String text, String style) {
-        Button btn = new Button(text);
-        btn.setMinSize(80, 40);
-        btn.setStyle(style);
-        applyHoverEffect(btn);
-        return btn;
+    private Button controlBtn(String icon) {
+        Button b = new Button(icon);
+        String base = "-fx-background-color:transparent; -fx-text-fill:" + C_TEXT_SEC
+                    + "; -fx-font-size:16px; -fx-cursor:hand; -fx-padding:6 10; -fx-background-radius:6; -fx-border-width:0;";
+        b.setStyle(base);
+        b.setOnMouseEntered(e -> b.setStyle(base + "-fx-text-fill:" + C_TEXT_PRI + "; -fx-background-color:" + C_ITEM_HOV + ";"));
+        b.setOnMouseExited (e -> {
+            if (!Boolean.TRUE.equals(b.getProperties().get("active"))) b.setStyle(base);
+            else b.setStyle(base + "-fx-text-fill:" + C_TEXT_PRI + ";");
+        });
+        return b;
     }
 
-    private Button createPlayButton() {
-        Button btn = new Button("▶");
-        btn.setMinSize(60, 50);
-        btn.setStyle("-fx-background-color:#1DB954; -fx-text-fill:white; -fx-font-size:14px; -fx-font-weight:bold; -fx-background-radius:25; -fx-cursor:hand; -fx-alignment:center;");
-        applyHoverEffect(btn);
-        return btn;
+    private Button playButton() {
+        Button b = new Button("▶");
+        String style = "-fx-background-color:" + C_PLAY_BG + "; -fx-text-fill:" + C_PLAY_ICON
+                     + "; -fx-font-size:14px; -fx-background-radius:50%; -fx-cursor:hand; "
+                     + "-fx-min-width:40px; -fx-min-height:40px; -fx-max-width:40px; -fx-max-height:40px; -fx-border-width:0;";
+        b.setStyle(style);
+        b.setOnMouseEntered(e -> b.setStyle(style + "-fx-background-color:" + C_ACCENT_HOV + ";"));
+        b.setOnMouseExited (e -> b.setStyle(style));
+        return b;
     }
 
-    private void seekToPosition() {
-        if (mediaPlayer != null && !isUpdatingProgress.get()) {
-            mediaPlayer.seek(Duration.seconds(progressSlider.getValue()));
-        }
+    private void setControlActive(Button b, boolean active) {
+        b.getProperties().put("active", active);
+        String base = "-fx-background-color:transparent; -fx-font-size:16px; -fx-cursor:hand; -fx-padding:6 10; -fx-background-radius:6; -fx-border-width:0;";
+        b.setStyle(base + (active ? "-fx-text-fill:" + C_TEXT_PRI + ";" : "-fx-text-fill:" + C_TEXT_SEC + ";"));
     }
 
-    private void updateTabStyles() {
-        if (currentView.equals("SONGS")) {
-            setTabActive(tabSongs, true);
-            setTabActive(tabPlaylist, false);
-        } else {
-            setTabActive(tabPlaylist, true);
-            setTabActive(tabSongs, false);
-        }
-    }
-
-    private void setTabActive(Button tab, boolean active) {
-        String style = active ? ACTIVE_TAB_STYLE : INACTIVE_TAB_STYLE;
-        tab.setStyle(style);
-        tab.getProperties().put("active", active);
-        tab.getProperties().put("activeStyle", style);
-    }
-
-    private void switchToSongsView() {
-        currentView = "SONGS";
-        updateContentView();
-        updateActionButtons();
-    }
-
-    private void switchToPlaylistsView() {
-        currentView = "PLAYLISTS";
-        updateContentView();
-        updateActionButtons();
-    }
-
+    // ── 액션 버튼 ─────────────────────────────────────────────────
     private void updateActionButtons() {
         actionButtonBox.getChildren().clear();
 
-        if (currentView.equals("PLAYLISTS")) {
-            Button createBtn = createActionButton("+");
-            createBtn.setOnAction(e -> createNewPlaylist());
-            actionButtonBox.getChildren().add(createBtn);
-        } else if (currentView.equals("PLAYLIST_DETAIL")) {
-            Button backBtn = createActionButton("←");
-            backBtn.setOnAction(e -> {
-                switchToPlaylistsView();
-                updateTabStyles();
-            });
+        if (currentView == View.SONGS) {
+            Button addFile = headerBtn("＋ from File");
+            Button addUrl  = headerBtn("＋ from URL");
+            addFile.setOnAction(e -> handleAddFile(mainStage));
+            addUrl .setOnAction(e -> addFromUrl());
+            actionButtonBox.getChildren().addAll(addFile, addUrl);
 
-            Button playAllBtn = createActionButton("▶");
-            playAllBtn.setOnAction(e -> playPlaylist());
+        } else if (currentView == View.PLAYLISTS) {
+            Button create = headerBtn("＋ New Playlist");
+            create.setOnAction(e -> createNewPlaylist());
+            actionButtonBox.getChildren().add(create);
 
-            actionButtonBox.getChildren().addAll(backBtn, playAllBtn);
+        } else if (currentView == View.PLAYLIST_DETAIL) {
+            Button back    = headerBtn("← Back");
+            Button playAll = headerBtn("▶ Play All");
+            Button addFile = headerBtn("＋ from File");
+            Button addUrl  = headerBtn("＋ from URL");
+            back.setOnAction(e -> { currentView = View.PLAYLISTS; updateContentView(); updateActionButtons(); updateTabStyles(); });
+            playAll.setOnAction(e -> playPlaylist());
+            addFile.setOnAction(e -> handleAddFile(mainStage));
+            addUrl .setOnAction(e -> addFromUrl());
+            actionButtonBox.getChildren().addAll(back, playAll, addFile, addUrl);
         }
     }
 
-    private void playPlaylist() {
-        ObservableList<File> playlist = playlists.get(currentPlaylistName);
-        if (playlist != null && !playlist.isEmpty()) {
-            currentPlaylist.setAll(playlist);
-            currentIndex = 0;
-            playedIndices.clear();
-            if (isShuffleOn) {
-                generateShuffleOrder();
-            }
-            playTrack();
-        }
+    private Button headerBtn(String text) {
+        Button b = new Button(text);
+        String base = "-fx-background-color:transparent; -fx-text-fill:" + C_TEXT_PRI
+                    + "; -fx-font-size:12px; -fx-font-weight:bold; -fx-cursor:hand; -fx-padding:5 12;"
+                    + "-fx-background-radius:8; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-border-radius:8;";
+        b.setStyle(base);
+        b.setOnMouseEntered(e -> b.setStyle(base + "-fx-background-color:" + C_ITEM_HOV + ";"));
+        b.setOnMouseExited (e -> b.setStyle(base));
+        return b;
     }
 
-    private Button createActionButton(String text) {
-        Button btn = new Button(text);
-        btn.setStyle("-fx-background-color:#282828; -fx-text-fill:#1DB954; -fx-font-size:11px; -fx-font-weight:bold; -fx-padding:6 12 6 12; -fx-background-radius:15; -fx-cursor:hand;");
-        applyHoverEffect(btn);
-        return btn;
-    }
-
+    // ══════════════════════════════════════════════════════════════════════
+    //  콘텐츠 뷰 업데이트
+    // ══════════════════════════════════════════════════════════════════════
     private void updateContentView() {
         contentView.getItems().clear();
-
-        if (currentView.equals("SONGS")) {
-            populateSongsList();
-        } else {
-            populatePlaylistsList();
-        }
-    }
-
-    private void populateSongsList() {
-        for (int i = 0; i < allSongs.size(); i++) {
-            String displayName = stripExtension(allSongs.get(i).getName());
-            contentView.getItems().add((i + 1) + ". " + displayName);
-        }
-
-        if (allSongs.isEmpty()) {
-            contentView.setPlaceholder(new Label("No songs added.\nClick 'FILE' or 'URL' to get started."));
-        }
-    }
-
-    private void populatePlaylistsList() {
-        for (String playlistName : playlists.keySet()) {
-            ObservableList<File> pl = playlists.get(playlistName);
-            int size = pl == null ? 0 : pl.size();
-            contentView.getItems().add(playlistName + " (" + size + " songs)");
-        }
-
-        if (playlists.isEmpty()) {
-            contentView.setPlaceholder(new Label("No playlists yet.\nClick '+' to start."));
-        }
-    }
-
-    private void handleDoubleClick() {
-        int selected = contentView.getSelectionModel().getSelectedIndex();
-        if (selected < 0) {
-            return;
-        }
-
         switch (currentView) {
-            case "SONGS":
-                playSongAtIndex(selected);
+            case SONGS:
+                allSongs.forEach(f -> contentView.getItems().add(stripExtension(f.getName())));
                 break;
-            case "PLAYLISTS":
-                openPlaylistAtIndex(selected);
+            case PLAYLISTS:
+                playlists.forEach((name, pl) -> contentView.getItems().add(name + "  ·  " + pl.size() + " songs"));
                 break;
-            case "PLAYLIST_DETAIL":
-                playPlaylistSongAtIndex(selected);
+            case PLAYLIST_DETAIL:
+                ObservableList<File> pl = playlists.get(currentPlaylistName);
+                if (pl != null) pl.forEach(f -> contentView.getItems().add(stripExtension(f.getName())));
                 break;
+        }
+    }
+
+    // ── 더블클릭 처리 ────────────────────────────────────────────────────
+    private void handleDoubleClick() {
+        int sel = contentView.getSelectionModel().getSelectedIndex();
+        if (sel < 0) return;
+        switch (currentView) {
+            case SONGS:           playSongAtIndex(sel);        break;
+            case PLAYLISTS:       openPlaylistAtIndex(sel);    break;
+            case PLAYLIST_DETAIL: playPlaylistSongAtIndex(sel); break;
         }
     }
 
@@ -889,293 +496,250 @@ public class aurora extends Application {
         currentPlaylist.setAll(allSongs);
         currentIndex = index;
         playedIndices.clear();
-        if (isShuffleOn) {
-            generateShuffleOrder();
-        }
+        if (isShuffleOn) generateShuffleOrder();
         playTrack();
     }
 
     private void openPlaylistAtIndex(int index) {
         String item = contentView.getItems().get(index);
-        int idx = item.lastIndexOf(" (");
-        String playlistName = idx > 0 ? item.substring(0, idx) : item;
-        openPlaylist(playlistName);
+        int dot = item.indexOf("  ·  ");
+        String name = dot > 0 ? item.substring(0, dot) : item;
+        openPlaylist(name);
     }
 
     private void playPlaylistSongAtIndex(int index) {
-        ObservableList<File> playlist = playlists.get(currentPlaylistName);
-        if (playlist == null || playlist.isEmpty()) {
-            return;
-        }
-
-        currentPlaylist.setAll(playlist);
+        ObservableList<File> pl = playlists.get(currentPlaylistName);
+        if (pl == null || pl.isEmpty()) return;
+        currentPlaylist.setAll(pl);
         currentIndex = index;
         playedIndices.clear();
-        if (isShuffleOn) {
-            generateShuffleOrder();
-        }
+        if (isShuffleOn) generateShuffleOrder();
         playTrack();
     }
 
-    private void createNewPlaylist() {
-        Optional<String> result = showCustomTextInputDialog("Create Playlist", "Enter playlist name:");
-        result.ifPresent(name -> {
-            if (!name.trim().isEmpty() && !playlists.containsKey(name)) {
-                playlists.put(name, FXCollections.observableArrayList());
-                saveDataToFile();
-                updateContentView();
-                showAlert("Success", "Playlist '" + name + "' created!");
-            } else {
-                showAlert("Error", "Invalid or duplicate playlist name.");
-            }
-        });
+    private void openPlaylist(String name) {
+        currentView = View.PLAYLIST_DETAIL;
+        currentPlaylistName = name;
+        updateContentView();
+        updateActionButtons();
+        updateTabStyles();
+        updatePlaylistStatus();
     }
 
-    private void openPlaylist(String playlistName) {
-        currentView = "PLAYLIST_DETAIL";
-        currentPlaylistName = playlistName;
-        contentTitle.setText("♫ " + playlistName);
+    // ── 파일 추가 ─────────────────────────────────────────────────────────
+    private void handleAddFile(Stage stage) {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Select Music Files");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Audio Files", "*.mp3","*.wav","*.m4a"));
+        List<File> files = fc.showOpenMultipleDialog(stage);
+        if (files == null || files.isEmpty()) return;
 
-        ObservableList<File> playlist = playlists.get(playlistName);
-        contentView.getItems().clear();
-
-        if (playlist == null) {
-            contentView.setPlaceholder(new Label("Playlist not found."));
-            updateActionButtons();
-            return;
+        if (currentView == View.PLAYLIST_DETAIL && currentPlaylistName != null) {
+            addFilesToPlaylist(files, currentPlaylistName);
+        } else {
+            addFilesToLibrary(files);
         }
+    }
 
-        for (int i = 0; i < playlist.size(); i++) {
-            String displayName = stripExtension(playlist.get(i).getName());
-            contentView.getItems().add((i + 1) + ". " + displayName);
+    private void addFilesToLibrary(List<File> files) {
+        int added = 0;
+        for (File f : files) if (!allSongs.contains(f)) { allSongs.add(f); added++; }
+        if (added > 0) {
+            saveDataToFile();
+            updateContentView();
+            if (allSongs.size() == files.size() && currentPlaylist.isEmpty()) {
+                currentPlaylist.setAll(allSongs); currentIndex = 0; playTrack();
+            }
+            showAlert("Added", added + " file(s) added to library.");
         }
+    }
 
-        if (playlist.isEmpty()) {
-            contentView.setPlaceholder(new Label("Playlist is empty.\nAdd songs using 'FILE' or 'URL' button."));
+    private void addFilesToPlaylist(List<File> files, String playlistName) {
+        ObservableList<File> pl = playlists.get(playlistName);
+        if (pl == null) return;
+        int added = 0;
+        for (File f : files) if (!pl.contains(f)) { pl.add(f); added++; }
+        if (added > 0) {
+            saveDataToFile();
+            updateContentView();
+            showAlert("Added", added + " song(s) added to playlist.");
         }
-
-        updateActionButtons();
     }
 
     private void addFromUrl() {
-        Optional<String> result = showCustomTextInputDialog("Add Music from URL", "Enter YouTube URL:");
-        result.ifPresent(url -> {
-            if (!url.trim().isEmpty()) {
-                downloadAndPlayYoutubeAudio(url.trim());
+        showCustomTextInputDialog("Add from URL", "Paste YouTube URL:").ifPresent(url -> {
+            if (!url.isBlank()) downloadAndPlayYoutubeAudio(url.trim());
+        });
+    }
+
+    // ── 플레이리스트 관리 ─────────────────────────────────────────────────
+    private void createNewPlaylist() {
+        showCustomTextInputDialog("New Playlist", "Playlist name:").ifPresent(name -> {
+            if (!name.isBlank() && !playlists.containsKey(name)) {
+                playlists.put(name, FXCollections.observableArrayList());
+                saveDataToFile();
+                updateContentView();
+            } else {
+                showAlert("Error", "Invalid or duplicate name.");
             }
         });
     }
 
-    private File getLibExe(String exeName) {
-        try {
-            java.net.URI uri = aurora.class.getProtectionDomain().getCodeSource().getLocation().toURI();
-            File codeLoc = new File(uri);
-            File baseDir = codeLoc.isDirectory() ? codeLoc : codeLoc.getParentFile();
-            if (baseDir == null) {
-                baseDir = new File(System.getProperty("user.dir"));
-            }
-            File candidate = new File(baseDir, "lib" + File.separator + exeName);
-            if (candidate.exists()) {
-                return candidate;
-            }
-            File fallback = new File(System.getProperty("user.dir"), "lib" + File.separator + exeName);
-            if (fallback.exists()) {
-                return fallback;
-            }
-            return new File(exeName);
-        } catch (Exception e) {
-            System.err.println("getLibExe warning: " + e.getMessage());
-            return new File(System.getProperty("user.dir"), "lib" + File.separator + exeName);
+    private void playPlaylist() {
+        ObservableList<File> pl = playlists.get(currentPlaylistName);
+        if (pl != null && !pl.isEmpty()) {
+            currentPlaylist.setAll(pl);
+            currentIndex = 0;
+            playedIndices.clear();
+            if (isShuffleOn) generateShuffleOrder();
+            playTrack();
+            updatePlaylistStatus();
         }
     }
 
-    private int runProcessWithProgress(String[] command, ProgressBar progressBar, Label progressLabel, double min, double max) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.redirectErrorStream(true);
-        pb.redirectInput(ProcessBuilder.Redirect.PIPE);
-
-        Process process = pb.start();
-
-        ExecutorService ex = Executors.newSingleThreadExecutor();
-        Future<?> readerFuture = ex.submit(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                int lineCount = 0;
-                while ((line = reader.readLine()) != null) {
-                    lineCount++;
-                    System.out.println(line);
-                    double fraction = Math.min(lineCount / 120.0, 1.0);
-                    double progress = min + fraction * (max - min);
-                    String shortLine = line.length() > 140 ? line.substring(0, 140) + "…" : line;
-                    Platform.runLater(() -> {
-                        try {
-                            progressBar.setProgress(progress);
-                            progressLabel.setText(shortLine);
-                        } catch (Exception ignored) {
-                        }
-                    });
-                }
-            } catch (IOException ioe) {
-                ioe.printStackTrace();
-            }
-        });
-
-        long timeoutSeconds = 600;
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroy();
-            if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-            }
-            readerFuture.cancel(true);
-            ex.shutdownNow();
-            Platform.runLater(() -> {
-                try {
-                    progressBar.setProgress(0);
-                } catch (Exception ignored) {
-                }
-                progressLabel.setText("Process timed out and was killed.");
-            });
-            throw new IOException("Process timed out after " + timeoutSeconds + "s");
+    // ── 편집 / 삭제 ──────────────────────────────────────────────────────
+    private void handleEditButtonClick(int idx, String item) {
+        if (idx < 0 || item == null) return;
+        switch (currentView) {
+            case SONGS:           handleSongEdit(idx);                                  break;
+            case PLAYLIST_DETAIL: handlePlaylistItemEdit(idx);                          break;
+            default:              showAlert("Not Editable", "Only songs can be edited."); break;
         }
+    }
 
-        try {
-            readerFuture.get(2, TimeUnit.SECONDS);
-        } catch (TimeoutException | ExecutionException ignored) {
-        } finally {
-            ex.shutdownNow();
+    private void handleSongEdit(int idx) {
+        if (idx < 0 || idx >= allSongs.size()) return;
+        File f = allSongs.get(idx);
+        if (!f.getName().startsWith("URL: ")) { showAlert("Edit", "Local file names cannot be changed here."); return; }
+        showCustomTextInputDialog("Rename Song", "New name:").ifPresent(newName -> {
+            if (!newName.isBlank() && renameUrlSong(f, newName.trim(), allSongs, idx)) {
+                saveDataToFile(); updateContentView();
+            }
+        });
+    }
+
+    private void handlePlaylistItemEdit(int idx) {
+        ObservableList<File> pl = playlists.get(currentPlaylistName);
+        if (pl == null || idx < 0 || idx >= pl.size()) return;
+        File f = pl.get(idx);
+        if (!f.getName().startsWith("URL: ")) { showAlert("Edit", "Local file names cannot be changed here."); return; }
+        showCustomTextInputDialog("Rename Song", "New name:").ifPresent(newName -> {
+            if (!newName.isBlank() && renameUrlSong(f, newName.trim(), pl, idx)) {
+                saveDataToFile(); updateContentView();
+            }
+        });
+    }
+
+    private void handleDeleteButtonClick(int idx, String item) {
+        if (idx < 0 || item == null) return;
+        switch (currentView) {
+            case SONGS:           handleSongDelete(idx, item); break;
+            case PLAYLISTS:       handlePlaylistDelete(item);  break;
+            case PLAYLIST_DETAIL: handlePlaylistItemDelete(idx); break;
         }
-
-        int exit = process.exitValue();
-        Platform.runLater(() -> {
-            try {
-                progressBar.setProgress(max);
-            } catch (Exception ignored) {
-            }
-        });
-        return exit;
     }
 
-    private void showDownloadProgressWindow(String url, Consumer<File> onComplete) {
-        Stage progressStage = new Stage();
-        progressStage.initModality(Modality.APPLICATION_MODAL);
-        progressStage.initStyle(StageStyle.UNDECORATED);
-        progressStage.setTitle("Downloading YouTube Audio");
-
-        VBox root = new VBox(10);
-        root.setPadding(new Insets(20));
-        root.setStyle("-fx-background-color:#121212; -fx-border-color:#282828; -fx-border-width:1;");
-
-        ProgressBar progressBar = new ProgressBar(0);
-        progressBar.setPrefWidth(360);
-        progressBar.setStyle("-fx-accent: #1DB954;");
-
-        Label progressLabel = new Label("Starting download...");
-        progressLabel.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:12px;");
-
-        root.getChildren().addAll(progressLabel, progressBar);
-        Scene scene = new Scene(root);
-        progressStage.setScene(scene);
-        progressStage.show();
-
-        new Thread(() -> {
-            final File[] finalMp3 = new File[1]; // 람다 캡처용 final 컨테이너
-            try {
-                String timestamp = String.valueOf(System.currentTimeMillis());
-                finalMp3[0] = new File(dataFolder, "yt_audio_" + timestamp + ".mp3");
-
-                File ytDlpExe = getLibExe(System.getProperty("os.name").toLowerCase().contains("win") ? "yt-dlp.exe" : "yt-dlp");
-                if (!ytDlpExe.exists()) {
-                    System.err.println("Warning: yt-dlp not found at: " + ytDlpExe.getAbsolutePath());
-                }
-
-                String[] downloadCmd = new String[]{
-                    ytDlpExe.getAbsolutePath(),
-                    "--no-playlist",
-                    "--extract-audio",
-                    "--audio-format", "mp3",
-                    "-o", finalMp3[0].getAbsolutePath(),
-                    url
-                };
-
-                int downloadExit = runProcessWithProgress(downloadCmd, progressBar, progressLabel, 0.0, 1.0);
-                if (downloadExit != 0 || finalMp3[0] == null || !finalMp3[0].exists() || finalMp3[0].length() == 0) {
-                    throw new IOException("yt-dlp failed to download/convert audio (exit=" + downloadExit + ").");
-                }
-
-                File urlFile = new File("URL: " + finalMp3[0].getName());
-                urlMappings.put(urlFile.getName(), finalMp3[0].toURI().toString());
-
-                Platform.runLater(() -> {
-                    try {
-                        if ("PLAYLIST_DETAIL".equals(currentView) && currentPlaylistName != null) {
-                            addUrlToPlaylist(urlFile, currentPlaylistName);
-                        } else {
-                            addUrlToLibrary(urlFile);
-                        }
-                        progressStage.close();
-                        if (onComplete != null) {
-                            onComplete.accept(finalMp3[0]);
-                        }
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                        progressStage.close();
-                        showAlert("Error", "Post-download handling failed:\n" + ex.getMessage());
-                    }
-                });
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                if (finalMp3[0] != null && finalMp3[0].exists()) {
-                    finalMp3[0].delete();
-                }
-                Platform.runLater(() -> {
-                    progressStage.close();
-                    showAlert("Error", "Failed to download/convert audio:\n" + e.getMessage());
-                });
-            }
-        }, "yt-download-thread").start();
+    private void handleSongDelete(int idx, String item) {
+        if (!showConfirmDialog("Delete Song", "Delete \"" + item + "\"?")) return;
+        if (idx < 0 || idx >= allSongs.size()) return;
+        File removed = allSongs.remove(idx);
+        currentPlaylist.remove(removed);
+        saveDataToFile();
+        updateContentView();
     }
 
-    private void downloadAndPlayYoutubeAudio(String url) {
-        showDownloadProgressWindow(url, tempMp3 -> {
-            Platform.runLater(() -> playDownloadedFile(tempMp3));
-        });
+    private void handlePlaylistDelete(String item) {
+        int dot = item.indexOf("  ·  ");
+        String name = dot > 0 ? item.substring(0, dot) : item;
+        if (!showConfirmDialog("Delete Playlist", "Delete \"" + name + "\" and all its songs?")) return;
+        playlists.remove(name);
+        saveDataToFile();
+        updateContentView();
     }
 
-    private void playDownloadedFile(File file) {
-        disposeMediaPlayer();
+    private void handlePlaylistItemDelete(int idx) {
+        ObservableList<File> pl = playlists.get(currentPlaylistName);
+        if (pl == null || idx < 0 || idx >= pl.size()) return;
+        String name = stripExtension(pl.get(idx).getName());
+        if (!showConfirmDialog("Remove Song", "Remove \"" + name + "\" from playlist?")) return;
+        pl.remove(idx);
+        saveDataToFile();
+        updateContentView();
+    }
 
+    // ── URL 노래 이름 변경 ────────────────────────────────────────────────
+    private boolean renameUrlSong(File urlEntry, String newBaseName, ObservableList<File> list, int indexInList) {
         try {
-            Media media = new Media(file.toURI().toString());
-            mediaPlayer = new MediaPlayer(media);
-            mediaPlayer.setVolume(volumeSlider.getValue());
+            String oldKey  = urlEntry.getName();
+            String mapped  = urlMappings.get(oldKey);
+            if (mapped == null) { showAlert("Error", "No mapping found for this song."); return false; }
 
-            // 메타데이터/시간 처리 콜백 등록
-            setupMetadataListener(media);
-            setupTimeListener();
-            setupMediaPlayerCallbacks();
+            File srcFile;
+            try { srcFile = mapped.startsWith("file:") ? new File(new URI(mapped)) : new File(mapped); }
+            catch (Exception ex) { srcFile = new File(mapped); }
+            if (!srcFile.exists()) { showAlert("Error", "Source file not found:\n" + srcFile.getAbsolutePath()); return false; }
 
-            // 오류 처리(추가)
-            mediaPlayer.setOnError(() -> {
-                showAlert("Playback Error", "Could not play file:\n" + mediaPlayer.getError());
+            // 현재 재생 중이면 정지
+            boolean wasPlayingThis = false;
+            for (int i = 0; i < currentPlaylist.size(); i++) {
+                if (currentPlaylist.get(i).getName().equals(oldKey) && i == currentIndex) {
+                    wasPlayingThis = true; break;
+                }
+            }
+            if (wasPlayingThis && mediaPlayer != null) {
                 disposeMediaPlayer();
-            });
+                try { Thread.sleep(200); } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
+            }
 
-            // 트랙 정보는 미리 갱신
-            updateTrackInfo(stripExtension(file.getName()));
+            String sanitized  = newBaseName.replaceAll("[/\\\\:*?\"<>|]", "_").trim();
+            if (sanitized.isEmpty()) { showAlert("Error", "Invalid file name."); return false; }
 
-        } catch (Exception e) {
-            showAlert("Playback Error", "Could not play file:\n" + e.getMessage());
-            e.printStackTrace();
+            String newFilename = sanitized.toLowerCase().endsWith(".mp3") || sanitized.toLowerCase().endsWith(".wav")
+                               ? sanitized : sanitized + ".mp3";
+            File targetFile = new File(dataFolder, newFilename);
+            if (targetFile.exists()) { showAlert("Error", "A file with this name already exists."); return false; }
+
+            Files.move(srcFile.toPath(), targetFile.toPath(), StandardCopyOption.ATOMIC_MOVE);
+
+            File   newUrlFile = new File("URL: " + targetFile.getName());
+            String newKey     = newUrlFile.getName();
+            urlMappings.remove(oldKey);
+            urlMappings.put(newKey, targetFile.toURI().toString());
+
+            // 모든 리스트에서 교체
+            replaceInList(list, indexInList, urlEntry, newUrlFile);
+            replaceInList(allSongs, -1, urlEntry, newUrlFile);
+            playlists.values().forEach(pl -> replaceInList(pl, -1, urlEntry, newUrlFile));
+            replaceInList(currentPlaylist, -1, urlEntry, newUrlFile);
+
+            if (wasPlayingThis) playTrack();
+            else updateTrackInfo(stripExtension(newUrlFile.getName()));
+
+            showAlert("Renamed", "Song renamed successfully.");
+            return true;
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            showAlert("Error", "Failed to rename song:\n" + ex.getMessage());
+            return false;
         }
     }
 
-    private void playTrack() {
-        if (currentPlaylist.isEmpty()) {
+    private void replaceInList(ObservableList<File> list, int knownIdx, File oldFile, File newFile) {
+        if (list == null) return;
+        if (knownIdx >= 0 && knownIdx < list.size() && list.get(knownIdx).getName().equals(oldFile.getName())) {
+            list.set(knownIdx, newFile);
             return;
         }
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).getName().equals(oldFile.getName())) { list.set(i, newFile); break; }
+        }
+    }
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  재생 / 컨트롤
+    // ══════════════════════════════════════════════════════════════════════
+    private void playTrack() {
+        if (currentPlaylist.isEmpty()) return;
         disposeMediaPlayer();
         File file = currentPlaylist.get(currentIndex);
 
@@ -1183,15 +747,8 @@ public class aurora extends Application {
             String source;
             if (file.getName().startsWith("URL: ")) {
                 String mapped = urlMappings.get(file.getName());
-                if (mapped == null) {
-                    showAlert("Error", "Failed to get stream URL for playback.");
-                    return;
-                }
-                if (mapped.startsWith("file:") || mapped.startsWith("http:") || mapped.startsWith("https:")) {
-                    source = mapped;
-                } else {
-                    source = new File(mapped).toURI().toString();
-                }
+                if (mapped == null) { showAlert("Error", "Cannot find stream URL for this song."); return; }
+                source = (mapped.startsWith("file:") || mapped.startsWith("http")) ? mapped : new File(mapped).toURI().toString();
             } else {
                 source = file.toURI().toString();
             }
@@ -1199,10 +756,8 @@ public class aurora extends Application {
             Media media = new Media(source);
             mediaPlayer = new MediaPlayer(media);
             mediaPlayer.setVolume(volumeSlider.getValue());
-
-            String baseName = stripExtension(file.getName());
-            updateTrackInfo(baseName);
-            playBtn.setText("■");
+            updateTrackInfo(stripExtension(file.getName()));
+            playBtn.setText("⏸");
             playedIndices.add(currentIndex);
 
             setupMetadataListener(media);
@@ -1210,253 +765,45 @@ public class aurora extends Application {
             setupMediaPlayerCallbacks();
 
         } catch (Exception e) {
-            showAlert("Playback Error", "Could not play file: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private void addUrlToPlaylist(File urlFile, String playlistName) {
-        ObservableList<File> pl = playlists.get(playlistName);
-        if (pl != null && !pl.contains(urlFile)) {
-            pl.add(urlFile);
-            saveDataToFile();
-            openPlaylist(playlistName);
-            showAlert("Success", "YouTube audio added to playlist!");
-        }
-    }
-
-    private void addUrlToLibrary(File urlFile) {
-        if (!allSongs.contains(urlFile)) {
-            allSongs.add(urlFile);
-            saveDataToFile();
-            updateContentView();
-            showAlert("Success", "YouTube audio added to library!");
-        }
-    }
-
-    private void disposeMediaPlayer() {
-        if (mediaPlayer != null) {
-            mediaPlayer.stop();
-            mediaPlayer.dispose();
-            mediaPlayer = null;
-        }
-    }
-
-    private void updateTrackInfo(String baseName) {
-        String displayName = baseName.length() > 30 ? baseName.substring(0, 27) + "..." : baseName;
-        trackTitle.setText(displayName);
-        trackArtist.setText("Unknown Artist");
-    }
-
-    private void setupMetadataListener(Media media) {
-        media.getMetadata().addListener((javafx.collections.MapChangeListener.Change<? extends String, ? extends Object> change) -> {
-            if (change.wasAdded()) {
-                String key = change.getKey();
-                Object value = change.getValueAdded();
-
-                Platform.runLater(() -> {
-                    switch (key) {
-                        case "image":
-                            updateAlbumArt((Image) value);
-                            break;
-                        case "artist":
-                            trackArtist.setText((String) value);
-                            break;
-                        case "title":
-                            trackTitle.setText((String) value);
-                            break;
-                    }
-                });
-            }
-        });
-    }
-
-    private void setupTimeListener() {
-        mediaPlayer.currentTimeProperty().addListener((obs, oldTime, newTime) -> {
-            if (!progressSlider.isValueChanging() && !isUpdatingProgress.get()) {
-                isUpdatingProgress.set(true);
-                Platform.runLater(() -> {
-                    progressSlider.setValue(newTime.toSeconds());
-                    currentTimeLabel.setText(formatTime(newTime));
-                    isUpdatingProgress.set(false);
-                });
-            }
-        });
-    }
-
-    private void setupMediaPlayerCallbacks() {
-        mediaPlayer.setOnReady(() -> {
-            Duration totalDuration = mediaPlayer.getTotalDuration();
-
-            if (totalDuration != null && !totalDuration.isUnknown() && totalDuration.toSeconds() > 0) {
-                progressSlider.setMax(totalDuration.toSeconds());
-                totalTimeLabel.setText(formatTime(totalDuration));
-            } else {
-                try {
-                    File currentFile = currentPlaylist.isEmpty() ? null : currentPlaylist.get(currentIndex);
-                    if (currentFile != null && currentFile.getName().startsWith("URL: ")) {
-                        String mapped = urlMappings.get(currentFile.getAbsolutePath());
-                        if (mapped != null) {
-                            if (mapped.startsWith("file:")) {
-                                try {
-                                    File mappedFile = new File(new java.net.URI(mapped));
-                                    if (mappedFile.exists() && mappedFile.getName().toLowerCase().endsWith(".wav")) {
-                                        long fileSize = mappedFile.length();
-                                        double durationSeconds = (fileSize - 44) / (44100.0 * 2 * 2); // WAV 추정
-                                        progressSlider.setMax(durationSeconds);
-                                        totalTimeLabel.setText(formatTime(Duration.seconds(durationSeconds)));
-                                    }
-                                } catch (Exception ignored) {
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
-
-                ScheduledExecutorService poller = Executors.newSingleThreadScheduledExecutor();
-                final AtomicInteger tries = new AtomicInteger(0);
-                Runnable task = () -> {
-                    try {
-                        Duration d = mediaPlayer.getTotalDuration();
-                        if (d != null && !d.isUnknown() && d.toSeconds() > 0) {
-                            Platform.runLater(() -> {
-                                progressSlider.setMax(d.toSeconds());
-                                totalTimeLabel.setText(formatTime(d));
-                            });
-                            poller.shutdown();
-                        } else if (tries.incrementAndGet() >= 12) {
-                            poller.shutdown();
-                        }
-                    } catch (Exception ex) {
-                        poller.shutdown();
-                    }
-                };
-                poller.scheduleAtFixedRate(task, 200, 500, TimeUnit.MILLISECONDS);
-            }
-
-            mediaPlayer.play();
-            playBtn.setText("■");
-        });
-
-        mediaPlayer.setOnEndOfMedia(() -> {
-            if (repeatMode == RepeatMode.ONE) {
-                mediaPlayer.seek(Duration.ZERO);
-                mediaPlayer.play();
-            } else {
-                playNext();
-            }
-        });
-    }
-
-    private void updateAlbumArt(Image image) {
-        albumPane.getChildren().clear();
-        Rectangle albumRect = new Rectangle(180, 180);
-        albumRect.setFill(Color.web("#282828"));
-        albumRect.setArcWidth(8);
-        albumRect.setArcHeight(8);
-
-        if (image != null) {
-            albumArt.setImage(image);
-            albumArt.setFitWidth(180);
-            albumArt.setFitHeight(180);
-            albumArt.setPreserveRatio(true);
-
-            Rectangle clip = new Rectangle(180, 180);
-            clip.setArcWidth(8);
-            clip.setArcHeight(8);
-            albumArt.setClip(clip);
-
-            albumPane.getChildren().add(albumArt);
-        } else {
-            Label noAlbum = new Label("No Cover");
-            noAlbum.setStyle("-fx-text-fill:#535353; -fx-font-size:16px; -fx-font-weight:bold;");
-            albumPane.getChildren().addAll(albumRect, noAlbum);
+            showAlert("Playback Error", "Could not play file:\n" + e.getMessage());
         }
     }
 
     private void togglePlay() {
         if (mediaPlayer == null) {
-            initializePlayback();
+            if (!currentPlaylist.isEmpty()) playTrack();
+            else if (!allSongs.isEmpty()) { currentPlaylist.setAll(allSongs); currentIndex = 0; playedIndices.clear(); if (isShuffleOn) generateShuffleOrder(); playTrack(); }
             return;
         }
-
         if (mediaPlayer.getStatus() == MediaPlayer.Status.PLAYING) {
-            pausePlayback();
+            mediaPlayer.pause(); playBtn.setText("▶");
         } else {
-            resumePlayback();
+            mediaPlayer.play();  playBtn.setText("⏸");
         }
-    }
-
-    private void initializePlayback() {
-        if (!currentPlaylist.isEmpty()) {
-            playTrack();
-        } else if (!allSongs.isEmpty()) {
-            currentPlaylist.setAll(allSongs);
-            currentIndex = 0;
-            playedIndices.clear();
-            if (isShuffleOn) {
-                generateShuffleOrder();
-            }
-            playTrack();
-        }
-    }
-
-    private void pausePlayback() {
-        mediaPlayer.pause();
-        playBtn.setText("▶");
-        playBtn.getProperties().put("active", Boolean.FALSE);
-    }
-
-    private void resumePlayback() {
-        mediaPlayer.play();
-        playBtn.setText("■");
-        String playActive = "-fx-background-color:#1DB954; -fx-text-fill:white; -fx-font-size:14px; -fx-font-weight:bold; -fx-min-width:60px; -fx-min-height:50px; -fx-background-radius:25; -fx-cursor:hand; -fx-alignment:center;";
-        playBtn.setStyle(playActive);
-        playBtn.getProperties().put("active", Boolean.TRUE);
-        playBtn.getProperties().put("activeStyle", playActive);
+        updatePlaylistStatus();
     }
 
     private void playPrev() {
-        if (currentPlaylist.isEmpty()) {
-            return;
-        }
-
-        if (isShuffleOn && !shuffleOrder.isEmpty()) {
+        if (currentPlaylist.isEmpty()) return;
+        if (isShuffleOn && !shuffleOrder.isEmpty())
             shuffleIndex = (shuffleIndex - 1 + shuffleOrder.size()) % shuffleOrder.size();
-            currentIndex = shuffleOrder.get(shuffleIndex);
-        } else {
+        else
             currentIndex = (currentIndex - 1 + currentPlaylist.size()) % currentPlaylist.size();
-        }
+        if (isShuffleOn) currentIndex = shuffleOrder.get(shuffleIndex);
         playTrack();
     }
 
     private void playNext() {
-        if (currentPlaylist.isEmpty()) {
-            return;
-        }
-
-        if (repeatMode == RepeatMode.ONE) {
-            playTrack();
-            return;
-        }
-
-        if (isShuffleOn && !shuffleOrder.isEmpty()) {
-            handleShuffleNext();
-        } else {
-            handleNormalNext();
-        }
+        if (currentPlaylist.isEmpty()) return;
+        if (repeatMode == RepeatMode.ONE) { playTrack(); return; }
+        if (isShuffleOn && !shuffleOrder.isEmpty()) handleShuffleNext();
+        else handleNormalNext();
     }
 
     private void handleShuffleNext() {
         if (playedIndices.size() >= currentPlaylist.size()) {
-            if (repeatMode == RepeatMode.ALL) {
-                playedIndices.clear();
-                generateShuffleOrder();
-            } else {
-                stopPlayback();
-                return;
-            }
+            if (repeatMode == RepeatMode.ALL) { playedIndices.clear(); generateShuffleOrder(); }
+            else { stopPlayback(); return; }
         }
         shuffleIndex = (shuffleIndex + 1) % shuffleOrder.size();
         currentIndex = shuffleOrder.get(shuffleIndex);
@@ -1465,404 +812,481 @@ public class aurora extends Application {
 
     private void handleNormalNext() {
         currentIndex = (currentIndex + 1) % currentPlaylist.size();
-        if (currentIndex == 0 && repeatMode == RepeatMode.OFF) {
-            stopPlayback();
-        } else {
-            playTrack();
-        }
+        if (currentIndex == 0 && repeatMode == RepeatMode.OFF) stopPlayback();
+        else playTrack();
     }
 
     private void stopPlayback() {
-        if (mediaPlayer != null) {
-            mediaPlayer.stop();
-            playBtn.setText("▶");
-        }
+        if (mediaPlayer != null) { mediaPlayer.stop(); playBtn.setText("▶"); }
+        updatePlaylistStatus();
     }
 
     private void toggleShuffle() {
         isShuffleOn = !isShuffleOn;
+        setControlActive(shuffleBtn, isShuffleOn);
+        if (isShuffleOn) { playedIndices.clear(); generateShuffleOrder(); }
+        else             { shuffleOrder.clear(); playedIndices.clear(); }
+    }
 
-        if (isShuffleOn) {
-            shuffleBtn.setText("Shuffle");
-            shuffleBtn.setStyle(ACTIVE_CONTROL_STYLE);
-            shuffleBtn.getProperties().put("active", Boolean.TRUE);
-            shuffleBtn.getProperties().put("activeStyle", ACTIVE_CONTROL_STYLE);
-            playedIndices.clear();
-            generateShuffleOrder();
-        } else {
-            shuffleBtn.setText("Shuffle");
-            shuffleBtn.setStyle(INACTIVE_CONTROL_STYLE);
-            shuffleBtn.getProperties().put("active", Boolean.FALSE);
-            shuffleBtn.getProperties().put("activeStyle", INACTIVE_CONTROL_STYLE);
-            shuffleOrder.clear();
-            playedIndices.clear();
+    private void toggleRepeat() {
+        switch (repeatMode) {
+            case OFF: repeatMode = RepeatMode.ALL; break;
+            case ALL: repeatMode = RepeatMode.ONE; break;
+            case ONE: repeatMode = RepeatMode.OFF; break;
         }
+    }
+
+    private void setupMetadataListener(Media media) {
+        media.getMetadata().addListener((javafx.collections.MapChangeListener.Change<? extends String, ? extends Object> c) -> {
+            if (!c.wasAdded()) return;
+            Platform.runLater(() -> {
+                String key = c.getKey();
+                if ("image".equals(key)) {
+                    updateAlbumArt((Image) c.getValueAdded());
+                } else if ("artist".equals(key)) {
+                    trackArtist.setText((String) c.getValueAdded());
+                } else if ("title".equals(key)) {
+                    trackTitle.setText((String) c.getValueAdded());
+                }
+            });
+        });
     }
 
     private void generateShuffleOrder() {
         shuffleOrder.clear();
         List<Integer> indices = new ArrayList<>();
-
-        for (int i = 0; i < currentPlaylist.size(); i++) {
-            if (i != currentIndex) {
-                indices.add(i);
-            }
-        }
-
-        applyHoverEffect(shuffleBtn);
+        for (int i = 0; i < currentPlaylist.size(); i++) if (i != currentIndex) indices.add(i);
         Collections.shuffle(indices);
         shuffleOrder.add(currentIndex);
         shuffleOrder.addAll(indices);
         shuffleIndex = 0;
     }
 
-    private void toggleRepeat() {
-        applyHoverEffect(repeatBtn);
-        switch (repeatMode) {
-            case OFF:
-                setRepeatMode(RepeatMode.ALL, "Repeat", ACTIVE_CONTROL_STYLE);
-                break;
-            case ALL:
-                setRepeatMode(RepeatMode.ONE, "Repeat 1", REPEAT_ONE_STYLE);
-                break;
-            case ONE:
-                setRepeatMode(RepeatMode.OFF, "Repeat", INACTIVE_CONTROL_STYLE);
-                break;
+    private void seekToPosition() {
+        if (mediaPlayer != null && !isUpdatingProgress.get())
+            mediaPlayer.seek(Duration.seconds(progressSlider.getValue()));
+    }
+
+    private void disposeMediaPlayer() {
+        if (mediaPlayer != null) { mediaPlayer.stop(); mediaPlayer.dispose(); mediaPlayer = null; }
+    }
+
+    // ── 미디어 플레이어 콜백 ──────────────────────────────────────────────
+    private void setupTimeListener() {
+        mediaPlayer.currentTimeProperty().addListener((obs, o, n) -> {
+            if (!progressSlider.isValueChanging() && !isUpdatingProgress.get()) {
+                isUpdatingProgress.set(true);
+                Platform.runLater(() -> {
+                    progressSlider.setValue(n.toSeconds());
+                    currentTimeLabel.setText(formatTime(n));
+                    isUpdatingProgress.set(false);
+                });
+            }
+        });
+    }
+
+    private void setupMediaPlayerCallbacks() {
+        mediaPlayer.setOnReady(() -> {
+            Duration total = mediaPlayer.getTotalDuration();
+            if (total != null && !total.isUnknown() && total.toSeconds() > 0) {
+                progressSlider.setMax(total.toSeconds());
+                totalTimeLabel.setText(formatTime(total));
+            } else {
+                // 폴링으로 재시도
+                ScheduledExecutorService poller = Executors.newSingleThreadScheduledExecutor();
+                AtomicInteger tries = new AtomicInteger(0);
+                poller.scheduleAtFixedRate(() -> {
+                    try {
+                        Duration d = mediaPlayer.getTotalDuration();
+                        if (d != null && !d.isUnknown() && d.toSeconds() > 0) {
+                            Platform.runLater(() -> { progressSlider.setMax(d.toSeconds()); totalTimeLabel.setText(formatTime(d)); });
+                            poller.shutdown();
+                        } else if (tries.incrementAndGet() >= 12) poller.shutdown();
+                    } catch (Exception ex) { poller.shutdown(); }
+                }, 200, 500, TimeUnit.MILLISECONDS);
+            }
+            mediaPlayer.play();
+            playBtn.setText("⏸");
+        });
+
+        mediaPlayer.setOnEndOfMedia(() -> {
+            if (repeatMode == RepeatMode.ONE) { mediaPlayer.seek(Duration.ZERO); mediaPlayer.play(); }
+            else playNext();
+        });
+
+        mediaPlayer.setOnError(() -> {
+            showAlert("Playback Error", "Could not play: " + mediaPlayer.getError());
+            disposeMediaPlayer();
+        });
+    }
+
+    // ── 앨범 아트 ────────────────────────────────────────────────────────
+    private void updateAlbumArt(Image image) {
+        albumPane.getChildren().clear();
+        if (image != null) {
+            albumArt.setImage(image);
+            albumArt.setFitWidth(44);
+            albumArt.setFitHeight(44);
+            albumArt.setPreserveRatio(true);
+            Rectangle clip = new Rectangle(44, 44);
+            clip.setArcWidth(6); clip.setArcHeight(6);
+            albumArt.setClip(clip);
+            albumPane.getChildren().add(albumArt);
+        } else {
+            Rectangle placeholder = new Rectangle(44, 44);
+            placeholder.setFill(Color.web(C_ITEM_SEL));
+            placeholder.setArcWidth(6); placeholder.setArcHeight(6);
+            Label note = new Label("♪");
+            note.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:18px;");
+            albumPane.getChildren().addAll(placeholder, note);
         }
     }
 
-    private void setRepeatMode(RepeatMode mode, String text, String style) {
-        repeatMode = mode;
-        repeatBtn.setText(text);
-        repeatBtn.setStyle(style);
-        repeatBtn.getProperties().put("active", mode != RepeatMode.OFF);
-        repeatBtn.getProperties().put("activeStyle", style);
+    private void updateTrackInfo(String baseName) {
+        String display = baseName.length() > 35 ? baseName.substring(0, 32) + "…" : baseName;
+        trackTitle.setText(display);
+        trackArtist.setText("—");
+        updatePlaylistStatus();
     }
 
+    private void updatePlaylistStatus() {
+        String status = "No Playlist";
+        if (currentPlaylistName != null && !currentPlaylistName.isEmpty()) {
+            String statusIcon = "⏹";
+            if (mediaPlayer != null) {
+                switch (mediaPlayer.getStatus()) {
+                    case PLAYING -> statusIcon = "▶";
+                    case PAUSED  -> statusIcon = "⏸";
+                    case STOPPED -> statusIcon = "⏹";
+                    default      -> statusIcon = "⏹";
+                }
+            }
+            status = currentPlaylistName + " " + statusIcon;
+        }
+        playlistStatusLabel.setText(status);
+    }
+
+    // ── yt-dlp 다운로드 ──────────────────────────────────────────────────
+    private void downloadAndPlayYoutubeAudio(String url) {
+        showDownloadProgressWindow(url, mp3 -> Platform.runLater(() -> {
+            File urlFile = new File("URL: " + mp3.getName());
+            urlMappings.put(urlFile.getName(), mp3.toURI().toString());
+            if (currentView == View.PLAYLIST_DETAIL && currentPlaylistName != null) {
+                ObservableList<File> pl = playlists.get(currentPlaylistName);
+                if (pl != null && !pl.contains(urlFile)) { pl.add(urlFile); saveDataToFile(); updateContentView(); }
+            } else {
+                if (!allSongs.contains(urlFile)) { allSongs.add(urlFile); saveDataToFile(); updateContentView(); }
+            }
+        }));
+    }
+
+    private File getLibExe(String exeName) {
+        try {
+            URI uri = aurora.class.getProtectionDomain().getCodeSource().getLocation().toURI();
+            File codeLoc = new File(uri);
+            File baseDir = codeLoc.isDirectory() ? codeLoc : codeLoc.getParentFile();
+            if (baseDir == null) baseDir = new File(System.getProperty("user.dir"));
+            File candidate = new File(baseDir, "lib" + File.separator + exeName);
+            if (candidate.exists()) return candidate;
+        } catch (Exception ignored) {}
+        File fallback = new File(System.getProperty("user.dir"), "lib" + File.separator + exeName);
+        return fallback.exists() ? fallback : new File(exeName);
+    }
+
+    private void showDownloadProgressWindow(String url, Consumer<File> onComplete) {
+        Stage dlStage = new Stage();
+        dlStage.initModality(Modality.APPLICATION_MODAL);
+        dlStage.initStyle(StageStyle.UNDECORATED);
+
+        ProgressBar bar = new ProgressBar(0);
+        bar.setPrefWidth(360);
+        bar.setStyle("-fx-accent:" + C_ACCENT + ";");
+
+        Label statusLbl = new Label("Starting download…");
+        statusLbl.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:12px;");
+        statusLbl.setWrapText(true);
+        statusLbl.setMaxWidth(360);
+
+        Label title = new Label("Downloading audio");
+        title.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:14px; -fx-font-weight:bold;");
+
+        VBox box = new VBox(12, title, bar, statusLbl);
+        box.setPadding(new Insets(24));
+        box.setStyle("-fx-background-color:" + C_BG + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-background-radius:10;");
+        dlStage.setScene(new Scene(box));
+        dlStage.show();
+
+        new Thread(() -> {
+            File[] mp3 = {null};
+            try {
+                String ts = String.valueOf(System.currentTimeMillis());
+                mp3[0] = new File(dataFolder, "yt_audio_" + ts + ".mp3");
+                boolean isWin = System.getProperty("os.name").toLowerCase().contains("win");
+                File ytdlp = getLibExe(isWin ? "yt-dlp.exe" : "yt-dlp");
+
+                String[] cmd = { ytdlp.getAbsolutePath(), "--no-playlist", "--extract-audio",
+                                 "--audio-format","mp3", "-o", mp3[0].getAbsolutePath(), url };
+                int exit = runProcessWithProgress(cmd, bar, statusLbl, 0.0, 1.0);
+
+                if (exit != 0 || !mp3[0].exists() || mp3[0].length() == 0)
+                    throw new IOException("yt-dlp failed (exit=" + exit + ")");
+
+                Platform.runLater(() -> {
+                    dlStage.close();
+                    if (onComplete != null) onComplete.accept(mp3[0]);
+                    showAlert("Done", "Download complete!");
+                });
+
+            } catch (Exception e) {
+                if (mp3[0] != null && mp3[0].exists()) mp3[0].delete();
+                Platform.runLater(() -> {
+                    dlStage.close();
+                    showAlert("Download Failed", e.getMessage());
+                });
+            }
+        }, "yt-download").start();
+    }
+
+    private int runProcessWithProgress(String[] command, ProgressBar progressBar, Label label, double min, double max)
+            throws IOException, InterruptedException {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+
+        ExecutorService ex = Executors.newSingleThreadExecutor();
+        Future<?> reader = ex.submit(() -> {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line; int count = 0;
+                while ((line = br.readLine()) != null) {
+                    double progress = min + Math.min(++count / 120.0, 1.0) * (max - min);
+                    String shortLine = line.length() > 120 ? line.substring(0, 120) + "…" : line;
+                    Platform.runLater(() -> { try { progressBar.setProgress(progress); label.setText(shortLine); } catch (Exception ignored) {} });
+                }
+            } catch (IOException ignored) {}
+        });
+
+        boolean done = process.waitFor(600, TimeUnit.SECONDS);
+        if (!done) { process.destroyForcibly(); reader.cancel(true); ex.shutdownNow(); throw new IOException("Process timed out."); }
+        try { reader.get(2, TimeUnit.SECONDS); } catch (Exception ignored) {} finally { ex.shutdownNow(); }
+        Platform.runLater(() -> { try { progressBar.setProgress(max); } catch (Exception ignored) {} });
+        return process.exitValue();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  저장 / 불러오기
+    // ══════════════════════════════════════════════════════════════════════
     private void saveDataToFile() {
         try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(new File(dataFolder, DATA_FILE)))) {
-            oos.writeObject(convertFilesToPaths(allSongs));
-            oos.writeObject(convertPlaylistsToPaths());
+            oos.writeObject(toPathList(allSongs));
+            oos.writeObject(toPlaylistPaths());
             oos.writeObject(urlMappings);
-        } catch (IOException e) {
-            System.err.println("Failed to save data: " + e.getMessage());
-        }
+        } catch (IOException e) { System.err.println("Save failed: " + e.getMessage()); }
     }
 
-    private List<String> convertFilesToPaths(ObservableList<File> files) {
-        List<String> paths = new ArrayList<>();
-        for (File f : files) {
-            paths.add(f.getName().startsWith("URL: ") ? f.getName() : f.getAbsolutePath());
-        }
-        return paths;
+    private List<String> toPathList(ObservableList<File> files) {
+        List<String> out = new ArrayList<>();
+        for (File f : files) out.add(f.getName().startsWith("URL: ") ? f.getName() : f.getAbsolutePath());
+        return out;
     }
 
-    private Map<String, List<String>> convertPlaylistsToPaths() {
-        Map<String, List<String>> playlistData = new HashMap<>();
-        for (Map.Entry<String, ObservableList<File>> entry : playlists.entrySet()) {
-            playlistData.put(entry.getKey(), convertFilesToPaths(entry.getValue()));
-        }
-        return playlistData;
+    private Map<String, List<String>> toPlaylistPaths() {
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        playlists.forEach((k, v) -> out.put(k, toPathList(v)));
+        return out;
     }
 
     @SuppressWarnings("unchecked")
     private void loadDataFromFile() {
-        File dataFile = new File(dataFolder, DATA_FILE);
-        if (!dataFile.exists()) {
-            return;
-        }
-
-        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(dataFile))) {
-            List<String> songPaths = (List<String>) ois.readObject();
-            loadSongsFromPaths(songPaths);
-
-            Map<String, List<String>> playlistData = (Map<String, List<String>>) ois.readObject();
-            loadPlaylistsFromData(playlistData);
-
+        File f = new File(dataFolder, DATA_FILE);
+        if (!f.exists()) return;
+        try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(f))) {
+            loadSongsFromPaths((List<String>) ois.readObject());
+            loadPlaylistsFromData((Map<String, List<String>>) ois.readObject());
             try {
-                @SuppressWarnings("unchecked")
-                Map<String, String> loadedMappings = (Map<String, String>) ois.readObject();
-                Map<String, String> normalized = new HashMap<>();
-                for (Map.Entry<String, String> e : loadedMappings.entrySet()) {
-                    String key = e.getKey();
-                    String value = e.getValue();
-                    String nameKey = key;
-                    try {
-                        File kf = new File(key);
-                        String kname = kf.getName();
-                        if (kname != null && !kname.trim().isEmpty()) {
-                            nameKey = kname;
-                        }
-                    } catch (Exception ignored) {
-                    }
-                    if (!normalized.containsKey(nameKey)) {
-                        normalized.put(nameKey, value);
-                    }
-                }
-                urlMappings.putAll(normalized);
-            } catch (Exception e) {
-            }
-        } catch (Exception e) {
-            System.err.println("Failed to load data: " + e.getMessage());
-        }
+                Map<String, String> loaded = (Map<String, String>) ois.readObject();
+                loaded.forEach((k, v) -> {
+                    String nameKey = k;
+                    try { String n = new File(k).getName(); if (n != null && !n.isBlank()) nameKey = n; } catch (Exception ignored) {}
+                    urlMappings.putIfAbsent(nameKey, v);
+                });
+            } catch (Exception ignored) {}
+        } catch (Exception e) { System.err.println("Load failed: " + e.getMessage()); }
     }
 
-    private void loadSongsFromPaths(List<String> songPaths) {
+    private void loadSongsFromPaths(List<String> paths) {
         allSongs.clear();
-        for (String path : songPaths) {
-            if (path.startsWith("URL: ")) {
-                allSongs.add(new File(path));
-            } else {
-                File musicFile = new File(path);
-                if (musicFile.exists()) {
-                    allSongs.add(musicFile);
-                }
-            }
+        for (String p : paths) {
+            if (p.startsWith("URL: ")) allSongs.add(new File(p));
+            else { File mf = new File(p); if (mf.exists()) allSongs.add(mf); }
         }
     }
 
-    private void loadPlaylistsFromData(Map<String, List<String>> playlistData) {
+    private void loadPlaylistsFromData(Map<String, List<String>> data) {
         playlists.clear();
-        for (Map.Entry<String, List<String>> entry : playlistData.entrySet()) {
-            ObservableList<File> playlist = FXCollections.observableArrayList();
-            for (String path : entry.getValue()) {
-                if (path.startsWith("URL: ")) {
-                    playlist.add(new File(path));
-                } else {
-                    File musicFile = new File(path);
-                    if (musicFile.exists()) {
-                        playlist.add(musicFile);
-                    }
-                }
+        data.forEach((name, paths) -> {
+            ObservableList<File> pl = FXCollections.observableArrayList();
+            for (String p : paths) {
+                if (p.startsWith("URL: ")) pl.add(new File(p));
+                else { File mf = new File(p); if (mf.exists()) pl.add(mf); }
             }
-            playlists.put(entry.getKey(), playlist);
-        }
+            playlists.put(name, pl);
+        });
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  다이얼로그
+    // ══════════════════════════════════════════════════════════════════════
     private void showAlert(String title, String content) {
         Platform.runLater(() -> {
-            Stage dialog = new Stage();
-            dialog.initModality(Modality.APPLICATION_MODAL);
-            dialog.initStyle(StageStyle.UNDECORATED);
-            dialog.setTitle(title);
+            Stage d = new Stage();
+            d.initModality(Modality.APPLICATION_MODAL);
+            d.initStyle(StageStyle.UNDECORATED);
 
             Label lbl = new Label(content);
-            lbl.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:13px;");
-            lbl.setWrapText(true);
-            lbl.setMaxWidth(420);
+            lbl.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:13px;");
+            lbl.setWrapText(true); lbl.setMaxWidth(380);
 
-            Button ok = new Button("OK");
-            ok.setStyle("-fx-background-color:#1DB954; -fx-text-fill:white; -fx-font-weight:bold; -fx-padding:6 14; -fx-background-radius:6;");
-            applyHoverEffect(ok);
-            ok.setOnAction(e -> dialog.close());
+            Button ok = dialogBtn("OK", C_ACCENT, C_PLAY_ICON);
+            ok.setOnAction(e -> d.close());
 
-            HBox btnBox = new HBox(ok);
-            btnBox.setAlignment(Pos.CENTER_RIGHT);
-            btnBox.setPadding(new Insets(8, 0, 0, 0));
+            Label hdr = new Label(title);
+            hdr.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:14px; -fx-font-weight:bold;");
 
-            VBox box = new VBox(10, lbl, btnBox);
-            box.setPadding(new Insets(14));
-            box.setStyle("-fx-background-color:#121212; -fx-border-color:#282828; -fx-border-width:1; -fx-background-radius:6;");
+            HBox btnRow = new HBox(ok);
+            btnRow.setAlignment(Pos.CENTER_RIGHT);
 
-            dialog.setScene(new Scene(box));
-            dialog.showAndWait();
+            VBox box = new VBox(10, hdr, lbl, btnRow);
+            box.setPadding(new Insets(20));
+            box.setStyle("-fx-background-color:" + C_BG + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-background-radius:10;");
+            d.setScene(new Scene(box));
+            d.showAndWait();
         });
     }
 
     private Optional<String> showCustomTextInputDialog(String title, String prompt) {
         final String[] result = {null};
-        Stage dialog = new Stage();
-        dialog.initModality(Modality.APPLICATION_MODAL);
-        dialog.initStyle(StageStyle.UNDECORATED);
-        dialog.setTitle(title);
+        Stage d = new Stage();
+        d.initModality(Modality.APPLICATION_MODAL);
+        d.initStyle(StageStyle.UNDECORATED);
+
+        Label hdr = new Label(title);
+        hdr.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:14px; -fx-font-weight:bold;");
 
         Label lbl = new Label(prompt);
-        lbl.setStyle("-fx-text-fill:white; -fx-font-size:14px;");
+        lbl.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:12px;");
 
         TextField input = new TextField();
         input.setPrefWidth(320);
-        input.setStyle("-fx-background-color:#1a1a1a; -fx-text-fill:white; -fx-border-color:#282828;");
+        input.setStyle("-fx-background-color:" + C_SURFACE + "; -fx-text-fill:" + C_TEXT_PRI
+                     + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-border-radius:6; -fx-background-radius:6; -fx-padding:7 10;");
 
-        Button ok = new Button("Ok");
-        Button cancel = new Button("Cancel");
-        ok.setStyle("-fx-background-color:#1DB954; -fx-text-fill:white; -fx-font-weight:bold;");
-        cancel.setStyle("-fx-background-color:#282828; -fx-text-fill:#b3b3b3;");
-
-        applyHoverEffect(ok);
-        applyHoverEffect(cancel);
-
-        ok.setOnAction(e -> {
-            result[0] = input.getText();
-            dialog.close();
-        });
-        cancel.setOnAction(e -> dialog.close());
-
+        Button ok     = dialogBtn("OK",     C_ACCENT,   C_PLAY_ICON);
+        Button cancel = dialogBtn("Cancel", C_ITEM_SEL, C_TEXT_PRI);
+        ok.setOnAction(e -> { result[0] = input.getText(); d.close(); });
+        cancel.setOnAction(e -> d.close());
         input.setOnAction(e -> ok.fire());
 
-        HBox buttons = new HBox(8, ok, cancel);
-        buttons.setAlignment(Pos.CENTER_RIGHT);
+        HBox btns = new HBox(8, cancel, ok);
+        btns.setAlignment(Pos.CENTER_RIGHT);
 
-        VBox box = new VBox(12, lbl, input, buttons);
-        box.setPadding(new Insets(16));
-        box.setStyle("-fx-background-color:#121212; -fx-border-color:#282828; -fx-border-width:1; -fx-background-radius:6;");
-
-        dialog.setScene(new Scene(box));
-        dialog.showAndWait();
+        VBox box = new VBox(10, hdr, lbl, input, btns);
+        box.setPadding(new Insets(20));
+        box.setStyle("-fx-background-color:" + C_BG + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-background-radius:10;");
+        d.setScene(new Scene(box));
+        d.showAndWait();
 
         return Optional.ofNullable(result[0]).map(String::trim).filter(s -> !s.isEmpty());
     }
 
-    private boolean showCustomConfirmDialog(String title, String header, String content) {
+    private boolean showConfirmDialog(String title, String message) {
         final boolean[] confirmed = {false};
-        Stage dialog = new Stage();
-        dialog.initModality(Modality.APPLICATION_MODAL);
-        dialog.initStyle(StageStyle.UNDECORATED);
-        dialog.setTitle(title);
+        Stage d = new Stage();
+        d.initModality(Modality.APPLICATION_MODAL);
+        d.initStyle(StageStyle.UNDECORATED);
 
-        Label lblHeader = new Label(header);
-        lblHeader.setStyle("-fx-text-fill:white; -fx-font-size:14px; -fx-font-weight:bold;");
+        Label hdr = new Label(title);
+        hdr.setStyle("-fx-text-fill:" + C_TEXT_PRI + "; -fx-font-size:14px; -fx-font-weight:bold;");
 
-        Label lblContent = new Label(content);
-        lblContent.setStyle("-fx-text-fill:#b3b3b3; -fx-font-size:12px;");
+        Label msg = new Label(message);
+        msg.setStyle("-fx-text-fill:" + C_TEXT_SEC + "; -fx-font-size:12px;");
 
-        Button ok = new Button("Delete");
-        Button cancel = new Button("Cancel");
-        ok.setStyle("-fx-background-color:#e03b3b; -fx-text-fill:white; -fx-font-weight:bold;");
-        cancel.setStyle("-fx-background-color:#282828; -fx-text-fill:#b3b3b3;");
+        Button del    = dialogBtn("Delete", C_DANGER, "#FFFFFF");
+        Button cancel = dialogBtn("Cancel", C_ITEM_SEL, C_TEXT_PRI);
+        del.setOnAction(e -> { confirmed[0] = true; d.close(); });
+        cancel.setOnAction(e -> d.close());
 
-        applyHoverEffect(ok);
-        applyHoverEffect(cancel);
+        HBox btns = new HBox(8, cancel, del);
+        btns.setAlignment(Pos.CENTER_RIGHT);
 
-        ok.setOnAction(e -> {
-            confirmed[0] = true;
-            dialog.close();
-        });
-        cancel.setOnAction(e -> dialog.close());
-
-        HBox buttons = new HBox(8, cancel, ok);
-        buttons.setAlignment(Pos.CENTER_RIGHT);
-
-        VBox box = new VBox(8, lblHeader, lblContent, buttons);
-        box.setPadding(new Insets(14));
-        box.setStyle("-fx-background-color:#121212; -fx-border-color:#282828; -fx-border-width:1; -fx-background-radius:6;");
-
-        dialog.setScene(new Scene(box));
-        dialog.showAndWait();
-
+        VBox box = new VBox(10, hdr, msg, btns);
+        box.setPadding(new Insets(20));
+        box.setStyle("-fx-background-color:" + C_BG + "; -fx-border-color:" + C_DIVIDER + "; -fx-border-width:1; -fx-background-radius:10;");
+        d.setScene(new Scene(box));
+        d.showAndWait();
         return confirmed[0];
     }
 
-    private String formatTime(Duration duration) {
-        if (duration == null || duration.toSeconds() < 0) {
-            return "0:00";
-        }
-        int totalSeconds = (int) duration.toSeconds();
-        int minutes = totalSeconds / 60;
-        int seconds = totalSeconds % 60;
-        return String.format("%d:%02d", minutes, seconds);
+    private Button dialogBtn(String text, String bg, String fg) {
+        Button b = new Button(text);
+        String base = "-fx-background-color:" + bg + "; -fx-text-fill:" + fg
+                    + "; -fx-font-size:12px; -fx-font-weight:bold; -fx-cursor:hand;"
+                    + "-fx-padding:7 18; -fx-background-radius:7; -fx-border-width:0;";
+        b.setStyle(base);
+        return b;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  유틸
+    // ══════════════════════════════════════════════════════════════════════
+    private String formatTime(Duration d) {
+        if (d == null || d.toSeconds() < 0) return "0:00";
+        int t = (int) d.toSeconds();
+        return String.format("%d:%02d", t / 60, t % 60);
     }
 
     private String stripExtension(String name) {
-        if (name == null) {
-            return "";
-        }
-
+        if (name == null) return "";
         String prefix = "";
-        if (name.startsWith("URL: ")) {
-            prefix = "URL: ";
-            name = name.substring(5);
-            name = name.replaceAll("[/\\\\]", "_");
-        }
-
-        int lastSep = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
-        String base = (lastSep >= 0) ? name.substring(lastSep + 1) : name;
-
+        if (name.startsWith("URL: ")) { prefix = ""; name = name.substring(5).replaceAll("[/\\\\]", "_"); }
+        int sep = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        String base = sep >= 0 ? name.substring(sep + 1) : name;
         int dot = base.lastIndexOf('.');
-        if (dot > 0) {
-            base = base.substring(0, dot);
-        }
-
-        return prefix + base;
+        return dot > 0 ? base.substring(0, dot) : base;
     }
 
-    private void applyHoverEffect(Button btn) {
-        String baseStyle = btn.getStyle();
-        
-        if (baseStyle.contains("ACTIVE_TAB_STYLE") || baseStyle.contains("-fx-padding:10 20 10 20")) {
-            return;
-        }
-        
-        String styleWithBorder = baseStyle + " -fx-border-color:transparent; -fx-border-width:2;";
-        btn.setStyle(styleWithBorder);
-        
-        btn.setOnMouseEntered(e -> {
-            btn.setStyle(baseStyle + " -fx-border-color:#1DB954; -fx-border-width:2;");
-        });
-
-        btn.setOnMouseExited(e -> {
-            btn.setStyle(baseStyle + " -fx-border-color:transparent; -fx-border-width:2;");
-        });
-    }
-
-    private void loadTitleIcon() {
+    private void loadTitleIcon(Label logo) {
         try {
-            InputStream iconStream = getClass().getResourceAsStream("/aurora.png");
-            if (iconStream != null) {
-                Image icon = new Image(iconStream);
-                ImageView iv = new ImageView(icon);
-                iv.setFitWidth(18);
-                iv.setFitHeight(18);
-                iv.setPreserveRatio(true);
-                titleLabel.setGraphic(iv);
+            InputStream is = getClass().getResourceAsStream("/aurora.png");
+            if (is != null) {
+                ImageView iv = new ImageView(new Image(is));
+                iv.setFitWidth(18); iv.setFitHeight(18); iv.setPreserveRatio(true);
+                logo.setGraphic(iv); logo.setContentDisplay(ContentDisplay.LEFT);
             }
-        } catch (Exception ex) {
-            titleLabel.setGraphic(null);
-        }
+        } catch (Exception ignored) {}
     }
 
     private void loadCustomFont() {
         try {
-            InputStream fontStream = getClass().getResourceAsStream("/NotoSans-Regular.ttf");
-            if (fontStream != null) {
-                Font.loadFont(fontStream, 12);
-            }
-        } catch (Exception ignored) {
-        }
+            InputStream fs = getClass().getResourceAsStream("/NotoSans-Regular.ttf");
+            if (fs != null) Font.loadFont(fs, 12);
+        } catch (Exception ignored) {}
     }
 
     private void setApplicationIcon(Stage stage) {
         try {
-            InputStream iconStream = getClass().getResourceAsStream("/aurora.png");
-            if (iconStream != null) {
-                stage.getIcons().add(new Image(iconStream));
-            } else {
-                stage.getIcons().add(createDefaultIcon());
-            }
-        } catch (Exception e) {
-            stage.getIcons().add(createDefaultIcon());
-        }
+            InputStream is = getClass().getResourceAsStream("/aurora.png");
+            stage.getIcons().add(is != null ? new Image(is) : createDefaultIcon());
+        } catch (Exception e) { stage.getIcons().add(createDefaultIcon()); }
     }
 
     private Image createDefaultIcon() {
         int size = 64;
         WritableImage icon = new WritableImage(size, size);
-        PixelWriter writer = icon.getPixelWriter();
-
-        int centerX = size / 2;
-        int centerY = size / 2;
-        int radius = size / 2 - 4;
-
-        for (int y = 0; y < size; y++) {
-            for (int x = 0; x < size; x++) {
-                double distance = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2));
-                if (distance <= radius) {
-                    writer.setColor(x, y, Color.web("#1DB954"));
-                } else {
-                    writer.setColor(x, y, Color.TRANSPARENT);
-                }
-            }
-        }
-
+        PixelWriter pw = icon.getPixelWriter();
+        int cx = size/2, cy = size/2, r = size/2 - 4;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+                pw.setColor(x, y, Math.sqrt(Math.pow(x-cx,2)+Math.pow(y-cy,2)) <= r ? Color.web(C_ACCENT) : Color.TRANSPARENT);
         return icon;
     }
 }
